@@ -249,7 +249,9 @@ Later families’ larger LL may add a few cycles; A-series own-LL may be
 slightly faster (smaller cache). Queuing and traffic add. DRAM is
 **nanoseconds**, not cycles. Do not block to M Cache (`sysctl` has no
 key for it). Cross-cluster modified sharing is ~**10×** intra-cluster
-(`amp.md` rec 63).
+(`amp.md` rec 63). Loaded random chase on a live SKU is higher than
+this unloaded floor. One Apple M4 Pro snapshot: `m4-pro-measured.md`.
+Keep **~95 ns** here as the planning number.
 
 ---
 
@@ -427,3 +429,12 @@ Unaligned stores want merge; isolate core vs engine on aligned **4 KiB**
 9. Stores have no dest to unroll against except exclusives / LSE (4).
 10. Floor, then measure (CPU Bottlenecks Useful vs Critical L1D miss vs
     Execution latency).
+
+---
+
+## SKU snapshot
+
+One-SKU loaded chase and width-ladder wall-clock:
+`references/m4-pro-measured.md`. Keep the table above as the unloaded
+planning floor. Unroll ≈ latency/throughput is a floor; time both
+core types.

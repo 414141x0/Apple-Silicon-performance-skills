@@ -115,7 +115,9 @@ contract.
 
 Try compiler auto-vectorization before a hand kernel. If `-O3` already
 emits `FMLA.4S`, do not rewrite; if it emits `FMUL`+`FADD`, write
-`vfmaq_*`.
+`vfmaq_*`. Compiler auto-vectorization of a naive reduction is real
+(`-Rpass=loop-vectorize`) and is not the ceiling. Time it against
+4-acc FMLA (rec 15) and rec 2.
 
 ACLE name: `v<OP>[q|s|d][_high]_<input_type>`. `OP` **drops** `S`/`U`/`F`
 and the asm `1`/`2`; other letters stay (`h` in `vhaddq` = `SHADD`; `q`
@@ -370,7 +372,9 @@ live regs. Unroll ≈ class latency / throughput: `latency-lookup.md`.
 
 Rec 34 (limited unroll + software pipeline, `core-microarch.md`)
 combines with rec 13. After raising unroll, re-check L1I / I-TLB miss
-(recs 19–20).
+(recs 19–20). 32 V-regs. Packing many vector constants into DUP-lanes
+is an x86 AVX-spill tactic; skip it until a spill `str`/`ldr` of Q
+shows up.
 
 ---
 
@@ -519,6 +523,11 @@ Notes:
 - FP associativity: document at the API if callers need bit-exact serial sums.
 - If `n` is huge and this is a BLAS-shaped problem, rec 2 (`vDSP_dotpr`)
   still wins.
+
+Time P and E. Scalar 4-acc can beat 1-vector NEON on wide P; 1-vector
+NEON can beat scalar 4-acc on narrower E. Four independent 128-bit
+FMLA vectors is the core default on both. Rec 2 still first for a
+plain dot.
 
 ---
 

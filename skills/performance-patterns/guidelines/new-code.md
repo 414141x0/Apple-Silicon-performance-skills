@@ -185,3 +185,10 @@ ISA catalogs, preferred mnemonics, and class latencies: use
 | Fused MAC | `vfmaq_f32` | same | `FMLA.4S` |
 | Atomics | C11 `atomic_*` → LSE | `std::atomic` | `LDADD` / `CAS`, not `LDXR`/`STXR` |
 | Timing | `clock_gettime_nsec_np` | `clock_gettime_nsec_np` | `CNTVCT_EL0` |
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock: `apple-silicon-codegen/references/m4-pro-measured.md`.
+Time the chip you ship.

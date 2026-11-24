@@ -186,7 +186,9 @@ Multi-file archives: Apple Archive. Streamed / very large buffers:
 1. Identify the algorithm (dot, GEMM, FFT, copy, compress, …).
 2. Find the Accelerate / simd / Compression / libc entry point.
 3. Time it against the current code (`mach_absolute_time` /
-   `clock_gettime_nsec_np`).
+   `clock_gettime_nsec_np`). Keep the measurement. Libc `memmem` can
+   lose on pathological repeats; `memcpy` still beats element loops
+   and `__builtin_nontemporal_store`.
 4. Only if it loses **and** the shape is truly uncovered, open
    `apple-silicon-codegen` and the SIMD patterns.
 
@@ -218,3 +220,9 @@ Multi-file archives: Apple Archive. Streamed / very large buffers:
    *then* propose a kernel and `apple-silicon-codegen`.
 5. For copies and compression, refuse a hand rewrite unless the user
    has a measured gap.
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock: `apple-silicon-codegen/references/m4-pro-measured.md`.

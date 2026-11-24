@@ -61,6 +61,10 @@ If the user asked for “a fast GEMM/dot/FFT/codec on Apple Silicon” and has n
 ruled out Accelerate, **emit the library call**. Custom ISA comes after rec 2
 fails the goal.
 
+Time the library against a hand kernel on the input you ship. Libc
+`memmem` can lose on pathological repeats; keep the measurement.
+GEMM / image: `cblas_sgemm` / `vImage` first.
+
 ---
 
 ## Compiler targeting

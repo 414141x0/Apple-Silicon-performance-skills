@@ -155,6 +155,9 @@ Rules of thumb (not a table of chip latencies):
 - `PRFM` does not fault — safe past the end of an array — so do not
   add a bounds branch “to protect” it.
 - Time **with and without**. Keep the without path.
+- Skip `PRFM` on L1-resident tables. Recode the walk (rec 48) before
+  prefetching a hash probe. Alternating next-probe prefetch tends to
+  beat interleaving many outstanding walks.
 
 If the same binary must run on E and P cores, a distance that is right
 for P is often too aggressive for E. That is a reason to **delete**
@@ -195,3 +198,9 @@ stream.
    hardware prefetcher exists because that number is core-type
    dependent; `apple-silicon-codegen/references/latency-lookup.md`
    (rec 47) for this chip if you must tune one.
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock: `apple-silicon-codegen/references/m4-pro-measured.md`.

@@ -95,6 +95,9 @@ algorithm. That file contains:
 | SME unavailable | Stay on Stage 1 with 4 ASIMD vectors |
 | Compiler already auto-vectorized, want a second variant | `library/cpu-dispatch.md` |
 
+Auto-vectorization is real and is not the ceiling. Time Stage 1 against
+rec 2. Time both QoS classes.
+
 ### Steps
 
 1. Identify the current width (scalar vs. ASIMD 128) and the operation.
@@ -130,3 +133,9 @@ algorithm. That file contains:
 3. Note caveats (bandwidth, associativity, SSVE-only rarely wins).
 4. Show the promoted loop from the impl file.
 5. If SME is off the table, say so explicitly: four ASIMD vectors is the stop.
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock: `apple-silicon-codegen/references/m4-pro-measured.md`.

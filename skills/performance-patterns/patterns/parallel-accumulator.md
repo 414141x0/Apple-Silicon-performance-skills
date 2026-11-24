@@ -141,7 +141,8 @@ A good rule of thumb is **FP latency ÷ throughput** accumulators to saturate
 the pipeline. With FMLA latency ~4 cycles
 (`apple-silicon-codegen/references/latency-lookup.md`), **4 vector
 accumulators** covers most loops; use more only while you still have V-regs
-and the loop stays compute-bound.
+and the loop stays compute-bound. Time P and E before shipping a width /
+ILP choice. Independent accumulators beat unroll count.
 
 ---
 
@@ -180,3 +181,9 @@ After applying the fix:
 6. Mention `vDSP_dotpr` / Accelerate if the call is a plain dot or GEMM —
    custom ASIMD is not always the first fix.
 7. For multi-variant binaries, dispatch via `library/cpu-dispatch.md`.
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock: `apple-silicon-codegen/references/m4-pro-measured.md`.

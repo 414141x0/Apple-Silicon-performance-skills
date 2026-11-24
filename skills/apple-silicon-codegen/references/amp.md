@@ -62,6 +62,9 @@ void start_interactive_work(void)
 }
 ```
 
+The same kernel can rank differently on P vs E. Time both QoS classes
+before shipping a width / ILP choice. E is not a slow P.
+
 ---
 
 ## Daemons: launchd `ProcessType` + XPC
@@ -332,3 +335,9 @@ void run_amp_pool(size_t nwork, void (^body)(size_t i))
 ```
 
 Workers block when idle (GCD). No spin. No pin. No SMT doubling.
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock: `references/m4-pro-measured.md`.

@@ -53,7 +53,8 @@ is why it only shows up as prominent in a multi-core profile.
 
 Add `alignas(128)` to the struct and insert explicit `char _pad[N]` fields
 between the contested fields. Use *more padding than you think you need* at
-this stage — proving the diagnosis is more important than minimizing size:
+this stage — proving the diagnosis is more important than minimizing size.
+64 B pad still shares the Apple 128 B line. Pad to `hw.cachelinesize` (128).
 
 ```c
 struct example {
@@ -150,3 +151,9 @@ structurally.
    Step 3 without Step 2**.
 5. After confirmation, propose the packed layout (hot fields on the fewest
    lines) and show the new struct with grouping comments.
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock: `apple-silicon-codegen/references/m4-pro-measured.md`.

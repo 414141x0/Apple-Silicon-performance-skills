@@ -112,3 +112,10 @@ Class 2 patterns have a separate `-impl.md`.
 | `patterns/main-thread-blocking.md` | Sync I/O on main, `Task { sync }`, `+load`, watchdog `0x8badf00d` |
 | `patterns/disk-and-dirty-memory.md` | 16 KiB dirty pages, WAL, `F_BARRIERFSYNC`, `XCTStorageMetric` |
 | `patterns/swiftui-update-cost.md` | Long `body`, `Observable()`, stored escaping closures |
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock: `apple-silicon-codegen/references/m4-pro-measured.md`.
+Do not treat it as a family table.

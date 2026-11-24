@@ -261,6 +261,10 @@ Direct uncond `B`/`BL` are generally **not** predicted — a computed
 `BRANCH_INDIR_MISPRED_NONSPEC` and
 `BRANCH_CALL_INDIR_MISPRED_NONSPEC` (`named-events.md`).
 
+Hot virtual dispatch: sort-by-type (stable vtable target) is the cheap
+fix; enum/switch is next; SOA-per-type still faster (dispatch out of
+the inner loop).
+
 ---
 
 ## Rec 26 — Use cracked / microcoded insns when you need the whole op (Low/Medium)
@@ -411,7 +415,8 @@ a **little** and interleave so iteration i+1 overlaps i, or **software
 pipeline** (stagger the next iter; more complex, often less size growth).
 Compilers unroll at high `-O`; Clang `#pragma unroll`. Then **re-check
 L1I and I-TLB** (recs 19–20). Do not spill V-regs to “help” ILP (rec 13).
-Use when cross-iter ILP is high but IPC is not.
+Use when cross-iter ILP is high but IPC is not. Independent accumulators
+beat unroll count. Clang `#pragma unroll` is not a substitute for rec 15.
 
 ---
 
@@ -447,6 +452,10 @@ larger private state can **slow aggressively shared MT**. Software
 prefetch **cannot target PL2** (rec 47). PRFM “L2” encoding = Shared
 LL.
 
+Tile when the working set **misses**. A kernel that already streams
+through L1 (tiny stencil, sequential 3×3) pays extra loop nests for
+no miss reduction.
+
 ---
 
 ## Rec 37 — False sharing: independent shared vars on different **128 B** lines (High)
@@ -471,7 +480,8 @@ struct Pair {
 ```
 
 `hw.cachelinesize` is 128 on Apple silicon; 128 is the layout constant
-this skill writes.
+this skill writes. x86 64 B pad still shares the Apple 128 B line —
+measure both.
 
 ---
 
@@ -495,6 +505,9 @@ struct Node {
 };
 ```
 
+Hot-object `sizeof` jump is at the **128 B** coherence line. SoA /
+compact hot fields / hot-cold split beat fat AoS.
+
 ---
 
 ## Rec 39 — Fast load-to-load when pointer chasing (Medium/Medium)
@@ -512,7 +525,9 @@ touch the pointer are fine.
 ```
 
 Prefetch will not save a pointer chase (rec 47). Pack `next` with the
-hot payload (rec 38) so one 64 B line covers the hop.
+hot payload (rec 38) so one 64 B line covers the hop. An
+unrolled-in-one-line linked list still loses to a packed arena and to
+an array. Prefer array, then arena with `next` at front, then a list.
 
 ---
 
@@ -549,7 +564,8 @@ platform technology; **this** rec is the microarch reason.
 **`FEAT_MOPS` is not on M5** — do not emit `CPY*`/`SET*` as the memcpy
 path (`chip-families.md`). Unaligned memcpy typically uses 16 B ops:
 every store hits 16 B, every 4th load hits 64 B, plus page splits
-(recs 42–43).
+(recs 42–43). Element loops and `__builtin_nontemporal_store` lose to
+`memcpy` on bulk copies. The builtin does not guarantee `STNP`.
 
 ---
 
@@ -692,6 +708,12 @@ rows look like one irregular stream). Pair a top-half row with a
 bottom-half row, or rearrange into one linear stream, **before**
 `PRFM`. Engine prefetch fills Shared LL only (`sme-engine.md`).
 
+`PRFM` of an L1-resident table occupies load slots and often
+regresses. A/B. Alternating next-probe prefetch tends to beat
+interleaving many outstanding walks. Packing many keys into one
+128 B group can lose to simple open addressing — the extra scan
+outweighs the extra miss.
+
 ---
 
 ## Rec 48 — Recode access patterns for the hardware prefetcher (Medium/Medium)
@@ -712,7 +734,10 @@ other row as demand so HW still sees one clean stream. All-SW: PRFM
 both future rows; may interleave; can fuse prefetch+compute per
 line-chunk; don’t prefetch so far lines fall out of L1D. Fuse only if
 the read-ahead is **pure PRFM** (demand in the same loop re-creates two
-streams). Neither HW nor SW fixes pointer chasing (recs 38–39).
+streams). Neither HW nor SW fixes pointer chasing (recs 38–39). Recode the
+**walk** so it is sequential. Sorting a query batch then merging is a
+different algorithm; it loses to hashing when the sort of the batch
+dominates.
 
 ---
 
@@ -747,9 +772,21 @@ is the ISA view (stack not tagged; SP/PC-relative not checked; SM/ZA
   store tags then data without STLF-on-tags; do not sprinkle TCO in app
   code.
 
+Scattered `new` per node is a DRAM/TLB tax on 16 KiB pages. Dense
+arena (level-order for trees) and `malloc`+fill beat geometric
+`vector` growth; `reserve` is the middle.
+
 ---
 
 ## After layout / instruction choices
 
 Class of the inner-loop op: `latency-lookup.md`. Verify:
 `apple-silicon-profile`. Named anti-pattern: `performance-patterns`.
+
+---
+
+## SKU snapshot
+
+One-SKU wall-clock for recs 25, 35–41, 47–49:
+`references/m4-pro-measured.md`. Book DRAM ~95 ns and L1D ~4 c stay
+in `latency-lookup.md`.

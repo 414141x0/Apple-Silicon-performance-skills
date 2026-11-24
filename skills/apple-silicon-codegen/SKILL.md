@@ -92,6 +92,7 @@ cross-links for one-home facts.
 | Threads, QoS, GCD, XPC/launchd `ProcessType`, spin-wait, LSE atomics, cross-cluster sharing | `references/amp.md` |
 | `sysctlbyname`, `FEAT_*`, cache/page/line sizes, perflevels | `references/sysctl.md` |
 | Instruction class latency / bandwidth / unroll ≈ latency/throughput | `references/latency-lookup.md` |
+| Measured wall-clock on **one** Apple M4 Pro (not a family table) | `references/m4-pro-measured.md` |
 
 ### Recommendation homes (recs 1–66)
 
@@ -112,6 +113,8 @@ rule in a second file.
 `latency-lookup.md` is the class-latency book. `chip-families.md` is family
 aliases, ISA ladder, S/P/E why, SME-8 vs SME-2. PMU names live in
 `apple-silicon-profile/references/named-events.md`.
+`references/m4-pro-measured.md` is one-SKU wall-clock (Apple M4 Pro,
+this machine). Do not treat it as a family table.
 
 ---
 
@@ -153,3 +156,7 @@ aliases, ISA ladder, S/P/E why, SME-8 vs SME-2. PMU names live in
 
 Unroll from `latency-lookup.md`. Query `hw.optional.arm.FEAT_*` before
 emitting SME / I8MM / BF16 / MTE.
+
+One-SKU wall-clock that backs this ladder on an Apple M4 Pro:
+`references/m4-pro-measured.md` (not a family table). Time both QoS
+classes before shipping a width / ILP choice.

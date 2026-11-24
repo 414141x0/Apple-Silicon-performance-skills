@@ -1,3 +1,6 @@
 local.md
 *workspace
 evals/
+experiments/
+.DS_Store
+__pycache__/
