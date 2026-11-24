@@ -1,4 +1,7 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Pattern: cold-path annotation
 
 ## When to apply
@@ -6,13 +9,18 @@
 Apply when a **hot function** calls other functions that are only reached on
 rarely-taken branches. Marking those callees `[[gnu::cold]]` (or
 `__attribute__((cold))`) tells the compiler that the branch leading to them is
-almost never taken. The compiler responds by reordering code so that the cold
-callees are emitted far from the hot path — improving instruction-cache density
-and generating branch-predictor-friendly constructs for the caller.
+almost never taken. The compiler reorders code so the cold callees sit far
+from the hot path — improving instruction-cache density and generating
+branch-predictor-friendly constructs for the caller.
 
 The benefit is **indirect**: the cold function itself does not speed up. The
 caller gets faster because its hot-path instructions are no longer interleaved
 with rarely-executed cold-path instructions.
+
+Guide 5.4.2: keep hot portions of functions in a small set of cache lines.
+Pages are **16 KiB**; L1I set conflicts are more likely for page-aligned
+dylibs. Do **not** NOP-align branch targets (Guide rec 22) as a substitute
+for this annotation.
 
 ### When is a callee cold?
 
@@ -43,8 +51,8 @@ when it matches any of these patterns:
 
 **By body:**
 - Body contains only (or primarily): `fprintf`, `fputs`, `perror`, `syslog`,
-  `exit`, `abort`, `throw`, or a combination of these
-- Body constructs an error message string (string formatting, `snprintf`)
+  `os_log`, `exit`, `abort`, `throw`, or a combination of these
+- Body constructs an error message string (`snprintf`)
 - Body is a single call to another cold candidate
 
 **By call site:**
@@ -62,6 +70,10 @@ hot-path instructions in program order, which pollutes the instruction cache
 (cold code evicts useful hot-path lines) and denies the compiler the chance to
 emit a branch sequence the CPU's static predictor recognizes as "almost never
 taken."
+
+On 16 KiB pages, a page-aligned dylib can land many functions in the same L1I
+sets (Guide 5.4.2). Pulling cold code out of the hot function's lines is the
+layout lever you actually have; NOP-padding branch targets is not.
 
 ---
 
@@ -135,56 +147,47 @@ void report_corruption(const Record &r) {
 
 ### Confirm candidate branches are truly cold (data-driven)
 
-If you have an Intel CPU and the binary is compiled with `-g`, use the
-**Branch probability measurement** building block from the `linux-perf` skill
-to confirm the branch probability before annotating:
+If you have a binary compiled with `-g`, use CPU Profiler samples on the
+branch, or the GCC dump parser shipped with `apple-silicon-profile`:
 
 ```bash
-python3 skills/linux-perf/tools/branchprob.py foo.c foo process
+python3 skills/apple-silicon-profile/tools/gccbranchprob.py foo.c foo process
 ```
 
-Look at the `Taken%` column for branches whose target is the candidate callee.
-A `Taken%` below ~0.1% is strong evidence the callee is cold and the annotation
-is appropriate.  This step is optional but removes guesswork for borderline cases.
+Look at the `Taken%` / `GCC Est%` column for branches whose target is the
+candidate callee. A taken rate below ~0.1% is strong evidence the callee is
+cold.
 
-**No workload available? Use GCC's static estimate as a proxy.**
-
-Recompile once with extra dump flags, then run `gccbranchprob.py`:
+**No workload? Clang PGO or GCC's static estimate.**
 
 ```bash
-# recompile — inject these flags via your build system
+# Clang PGO
+clang -O3 -fprofile-instr-generate -g -o foo foo.c
+# run a representative workload, then:
+xcrun llvm-profdata merge default.profraw -o foo.profdata
+clang -O3 -fprofile-instr-use=foo.profdata -S -o after.s foo.c
+
+# GCC static estimate (ISA-neutral dump)
 gcc -g -fdump-tree-profile_estimate-lineno -dumpdir dump/ ... foo.c
-
-python3 skills/linux-perf/tools/gccbranchprob.py foo.c dump/ process
+python3 skills/apple-silicon-profile/tools/gccbranchprob.py foo.c dump/ process
 ```
 
-Look at `GCC Est%`. A value near 0% means the compiler itself expects this
-branch to be almost never taken — a strong cold-path signal even without runtime
-data.  See the **GCC static branch probability** building block in `linux-perf`
-for full details.
+A `GCC Est%` near 0% means the compiler already expects the branch to be
+almost never taken.
 
 ### Confirm the annotation moved code out of the hot path
 
-Build with `-O2` (or `-O3`) and compare the generated assembly:
+Build with `-O2` (or `-O3`) and compare assembly:
 
 ```bash
-g++ -O2 -S -o before.s before.cpp
-g++ -O2 -S -o after.s after.cpp
+clang++ -O2 -S -o before.s before.cpp
+clang++ -O2 -S -o after.s after.cpp
+llvm-objdump -d after.o
 ```
 
 In `after.s`, the hot path of `process()` should be a tight loop with the
-cold branch jumping forward (out of the main loop body), and `report_corruption`
-should appear after the function's main return sequence — not interleaved within
-the loop.
-
-A quick check:
-```bash
-# Confirm the cold function is placed after the return in the object:
-objdump -d after.o | grep -A 20 '<process>'
-```
-
-The cold callee's instructions should appear well after the `ret` of the hot
-function, not inside the hot loop.
+cold branch jumping forward, and `report_corruption` should appear after
+the function's main return — not interleaved within the loop.
 
 ---
 
@@ -197,5 +200,6 @@ function, not inside the hot loop.
    instruction stream.
 3. Show the annotated version of each cold callee (the hot function body is
    unchanged).
-4. Optionally show the before/after assembly diff for the hot function to make
-   the code-motion effect visible.
+4. Mention 16 KiB pages / L1I set conflicts and that NOP-aligning branch
+   targets is the wrong tool.
+5. Optionally show the before/after assembly diff for the hot function.

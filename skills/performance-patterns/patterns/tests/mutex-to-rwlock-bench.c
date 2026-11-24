@@ -1,47 +1,41 @@
 /*
+ * Copyright (c) 2026. MIT license.
+ *
+ * Original Apple Silicon / Darwin example.
+ *
  * mutex-to-rwlock-bench.c — Verify claims in mutex-to-rwlock.md
  *
  * Demonstrates:
- *   1. Mutex serializes readers → throughput degrades with core count
- *   2. rwlock allows concurrent readers → throughput scales with core count
- *   3. IPC difference between mutex and rwlock under read-heavy load
+ *   1. Mutex serializes readers → throughput degrades with thread count
+ *   2. rwlock allows concurrent readers → throughput scales with thread count
  *
  * Build:
- *   gcc -O2 -pthread -o mutex-to-rwlock-bench mutex-to-rwlock-bench.c
+ *   clang -O2 -pthread -o mutex-to-rwlock-bench mutex-to-rwlock-bench.c
  *
  * Run:
  *   ./mutex-to-rwlock-bench [max_threads] [duration_sec] [write_pct] [mode]
  *
  *   mode: "mutex" | "rwlock" | omit for comparative run
  *
- * Examples:
- *   ./mutex-to-rwlock-bench 32 2 5          # comparative table
- *   ./mutex-to-rwlock-bench 32 5 0 mutex    # single-mode for profiling
- *   ./mutex-to-rwlock-bench 32 5 0 rwlock   # single-mode for profiling
+ * Profile with xctrace / CPU Profiler (not perf):
+ *   xctrace record --template 'CPU Profiler' --output mutex.trace -- \
+ *       ./mutex-to-rwlock-bench 8 5 0 mutex
  *
- * Profile (to see futex_wait / osq_lock with mutex):
- *   perf record -g ./mutex-to-rwlock-bench 32 5 0 mutex
- *   perf report
- *
- * Expected results:
- *   - Mutex throughput plateaus or degrades as threads increase (serialization)
- *   - rwlock throughput scales near-linearly with core count (concurrent readers)
- *   - perf shows mutex spending 40%+ in kernel (futex_wait, schedule, wake IPIs)
- *   - perf shows rwlock staying entirely in user-space (atomic reader-count ops)
+ * Cannot pin P vs E cores. Threads request QOS_CLASS_USER_INTERACTIVE so
+ * the system prefers S/P cores; the OS still chooses placement.
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <pthread/qos.h>
 #include <stdatomic.h>
 #include <time.h>
-#include <sched.h>
 #include <unistd.h>
 
-/* Align per-thread data to avoid false sharing between thread_result structs */
-#define CACHE_LINE 64
+/* Align per-thread data to 128 B — Apple silicon cache line. */
+#define CACHE_LINE 128
 
 /* 64K entries — large enough that random accesses miss L1, simulating a
  * realistic lookup table (e.g., routing table, config cache, hash map) */
@@ -53,8 +47,7 @@
 #define READ_ITERS 256
 
 /* Thread-local PRNG — xorshift32 has no shared state, so it doesn't introduce
- * contention that would mask the mutex/rwlock scaling difference.
- * (glibc rand_r has internal locking on some implementations) */
+ * contention that would mask the mutex/rwlock scaling difference. */
 static inline unsigned int xorshift32(unsigned int *state) {
     unsigned int x = *state;
     x ^= x << 13;
@@ -64,8 +57,6 @@ static inline unsigned int xorshift32(unsigned int *state) {
     return x;
 }
 
-/* Shared lookup table — represents the read-heavy data structure protected
- * by the lock (e.g., a routing table, session cache, or config store) */
 struct lookup_table {
     int entries[TABLE_SIZE];
 };
@@ -76,11 +67,47 @@ static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_rwlock_t g_rwlock = PTHREAD_RWLOCK_INITIALIZER;
 
 static atomic_int g_running;
-/* Barrier ensures all threads are spawned and ready before any start working */
-static pthread_barrier_t g_barrier;
 
-/* Per-thread result — padded to a full cache line so threads don't
- * false-share their operation counters */
+/* Public Darwin headers do not export pthread_barrier_t. Tiny rendezvous. */
+struct bench_barrier {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    unsigned needed;
+    unsigned arrived;
+    unsigned generation;
+};
+static struct bench_barrier g_barrier;
+
+static void barrier_init(unsigned count)
+{
+    pthread_mutex_init(&g_barrier.mu, NULL);
+    pthread_cond_init(&g_barrier.cv, NULL);
+    g_barrier.needed = count;
+    g_barrier.arrived = 0;
+    g_barrier.generation = 0;
+}
+
+static void barrier_wait(void)
+{
+    pthread_mutex_lock(&g_barrier.mu);
+    unsigned gen = g_barrier.generation;
+    if (++g_barrier.arrived == g_barrier.needed) {
+        g_barrier.arrived = 0;
+        g_barrier.generation++;
+        pthread_cond_broadcast(&g_barrier.cv);
+    } else {
+        while (gen == g_barrier.generation)
+            pthread_cond_wait(&g_barrier.cv, &g_barrier.mu);
+    }
+    pthread_mutex_unlock(&g_barrier.mu);
+}
+
+static void barrier_destroy(void)
+{
+    pthread_cond_destroy(&g_barrier.cv);
+    pthread_mutex_destroy(&g_barrier.mu);
+}
+
 struct thread_result {
     unsigned long ops;
     char pad[CACHE_LINE - sizeof(unsigned long)];
@@ -92,9 +119,6 @@ struct bench_config {
     struct thread_result *result;
 };
 
-/* Simulate a read-heavy critical section: 256 random lookups into the table.
- * Random access pattern ensures cache misses that make the section non-trivial,
- * representative of real hash table / tree lookups */
 static int do_read_work(unsigned int *state) {
     int sum = 0;
     for (int i = 0; i < READ_ITERS; i++) {
@@ -104,23 +128,23 @@ static int do_read_work(unsigned int *state) {
     return sum;
 }
 
-/* Simulate a rare write (e.g., cache invalidation, config update).
- * Intentionally cheap — the point is that even rare writes cap rwlock scaling
- * because a writer must wait for all readers to release */
 static void do_write_work(int tid) {
     g_table.entries[tid % TABLE_SIZE] = tid;
 }
 
-/* Mutex worker: acquires exclusive lock for EVERY operation (read or write).
- * This is the anti-pattern — all threads serialize even when only reading.
- * At high thread counts, most time is spent in futex_wait (kernel sleep). */
+static void apply_qos(void) {
+    /* Hint S/P cores. The OS still chooses placement; there is no taskset. */
+    (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+}
+
 static void *worker_mutex(void *arg) {
     struct bench_config *cfg = arg;
     unsigned long ops = 0;
     unsigned int rng = cfg->thread_id + 1;
     int sink = 0;
 
-    pthread_barrier_wait(&g_barrier);
+    apply_qos();
+    barrier_wait();
 
     while (atomic_load_explicit(&g_running, memory_order_relaxed)) {
         int is_write = (cfg->write_pct > 0) &&
@@ -139,17 +163,14 @@ static void *worker_mutex(void *arg) {
     return (void *)(long)sink;
 }
 
-/* rwlock worker: readers take rdlock (shared), writers take wrlock (exclusive).
- * This is the fix — concurrent readers proceed without blocking each other.
- * At high thread counts, all cores do useful work in parallel.
- * The only overhead is user-space atomic inc/dec of the reader count. */
 static void *worker_rwlock(void *arg) {
     struct bench_config *cfg = arg;
     unsigned long ops = 0;
     unsigned int rng = cfg->thread_id + 1;
     int sink = 0;
 
-    pthread_barrier_wait(&g_barrier);
+    apply_qos();
+    barrier_wait();
 
     while (atomic_load_explicit(&g_running, memory_order_relaxed)) {
         int is_write = (cfg->write_pct > 0) &&
@@ -171,20 +192,15 @@ static void *worker_rwlock(void *arg) {
     return (void *)(long)sink;
 }
 
-/* Run one benchmark configuration: spawn num_threads, let them run for
- * duration_sec, then signal stop and collect total operations.
- * Returns aggregate throughput in ops/sec. */
 static double run_bench(int num_threads, int duration_sec, int write_pct,
                         int use_rwlock) {
-    pthread_t *threads = calloc(num_threads, sizeof(pthread_t));
-    struct bench_config *cfgs = calloc(num_threads, sizeof(struct bench_config));
+    pthread_t *threads = calloc((size_t)num_threads, sizeof(pthread_t));
+    struct bench_config *cfgs = calloc((size_t)num_threads, sizeof(struct bench_config));
     struct thread_result *results = aligned_alloc(CACHE_LINE,
-        num_threads * sizeof(struct thread_result));
-    memset(results, 0, num_threads * sizeof(struct thread_result));
+        (size_t)num_threads * sizeof(struct thread_result));
+    memset(results, 0, (size_t)num_threads * sizeof(struct thread_result));
 
-    /* Barrier count = workers + main thread; main participates so it can
-     * start the timer at the exact instant all workers begin */
-    pthread_barrier_init(&g_barrier, NULL, num_threads + 1);
+    barrier_init((unsigned)num_threads + 1);
     atomic_store(&g_running, 1);
 
     for (int i = 0; i < num_threads; i++) {
@@ -195,12 +211,11 @@ static double run_bench(int num_threads, int duration_sec, int write_pct,
                        use_rwlock ? worker_rwlock : worker_mutex, &cfgs[i]);
     }
 
-    /* Wait for all workers to be ready, then start timing */
-    pthread_barrier_wait(&g_barrier);
+    barrier_wait();
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
-    sleep(duration_sec);
+    sleep((unsigned)duration_sec);
     atomic_store(&g_running, 0);
     clock_gettime(CLOCK_MONOTONIC, &end);
 
@@ -213,7 +228,7 @@ static double run_bench(int num_threads, int duration_sec, int write_pct,
         total_ops += results[i].ops;
     }
 
-    pthread_barrier_destroy(&g_barrier);
+    barrier_destroy();
     free(threads);
     free(cfgs);
     free(results);
@@ -221,8 +236,6 @@ static double run_bench(int num_threads, int duration_sec, int write_pct,
     return total_ops / elapsed;
 }
 
-/* Mode for single-lock profiling runs (perf stat / perf record) and
- * calibration (rwlock-ops / mutex-ops print raw throughput for scripting) */
 enum run_mode { MODE_BOTH, MODE_MUTEX, MODE_RWLOCK, MODE_MUTEX_OPS, MODE_RWLOCK_OPS };
 
 static enum run_mode parse_mode(const char *s) {
@@ -234,7 +247,7 @@ static enum run_mode parse_mode(const char *s) {
 }
 
 int main(int argc, char **argv) {
-    int max_threads = 160;
+    int max_threads = 16;
     int duration_sec = 2;
     int write_pct = 5;
     enum run_mode mode = MODE_BOTH;
@@ -247,12 +260,10 @@ int main(int argc, char **argv) {
     if (max_threads < 1) max_threads = 1;
     if (max_threads > 1024) max_threads = 1024;
 
-    /* Cap threads at online core count — oversubscription would measure
-     * scheduler behavior rather than lock contention */
-    int cores = sysconf(_SC_NPROCESSORS_ONLN);
+    int cores = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (cores < 1) cores = 1;
     if (max_threads > cores) max_threads = cores;
 
-    /* Single-mode run: used by perf to profile one lock type in isolation */
     if (mode == MODE_MUTEX) {
         run_bench(max_threads, duration_sec, write_pct, 0);
         return 0;
@@ -261,7 +272,6 @@ int main(int argc, char **argv) {
         run_bench(max_threads, duration_sec, write_pct, 1);
         return 0;
     }
-    /* Ops mode: print raw throughput for calibration scripting */
     if (mode == MODE_MUTEX_OPS) {
         printf("%.0f\n", run_bench(max_threads, duration_sec, write_pct, 0));
         return 0;
@@ -271,19 +281,17 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* Default: comparative benchmark across thread counts */
-    printf("mutex-to-rwlock benchmark\n");
-    printf("  max_threads=%d  duration=%ds  write_pct=%d%%  cores=%d\n\n",
+    printf("mutex-to-rwlock benchmark (Apple silicon)\n");
+    printf("  max_threads=%d  duration=%ds  write_pct=%d%%  logicalcpu=%d\n",
            max_threads, duration_sec, write_pct, cores);
+    printf("  QoS=USER_INTERACTIVE (hint only; OS places threads on S/P/E)\n\n");
     printf("%6s  %15s  %15s  %10s\n",
            "threads", "mutex (Mops/s)", "rwlock (Mops/s)", "speedup");
     printf("%6s  %15s  %15s  %10s\n",
            "------", "---------------", "---------------", "----------");
 
-    /* Power-of-2 progression shows scaling behavior clearly;
-     * higher values show cross-socket NUMA effects if present */
-    int thread_counts[] = {1, 2, 4, 8, 16, 32, 64, 96, 128, 160, 192, 256};
-    int n_counts = sizeof(thread_counts) / sizeof(thread_counts[0]);
+    int thread_counts[] = {1, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 32};
+    int n_counts = (int)(sizeof(thread_counts) / sizeof(thread_counts[0]));
 
     for (int i = 0; i < n_counts; i++) {
         int t = thread_counts[i];
@@ -297,10 +305,10 @@ int main(int argc, char **argv) {
                t, mutex_ops / 1e6, rwlock_ops / 1e6, speedup);
     }
 
-    printf("\nKey claims verified:\n");
+    printf("\nKey claims to verify on this machine:\n");
     printf("  - Mutex throughput should degrade or plateau as thread count grows\n");
     printf("  - rwlock throughput should scale with thread count (read-heavy)\n");
-    printf("  - Speedup should increase with core count (O(N) serialization)\n");
+    printf("  - Record hw.nperflevels / perflevel*.physicalcpu with the table\n");
 
     return 0;
 }

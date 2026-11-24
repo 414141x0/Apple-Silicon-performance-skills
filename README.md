@@ -1,37 +1,48 @@
-# Intel Performance Skills — AI Agent Skills
+# Apple Silicon Performance Skills — AI Agent Skills
 
 A collection of AI agent **skills** for CPU performance analysis and optimization on
-x86 Linux. The skills give an agent structured, multi-step workflows for profiling
-with Linux `perf`, identifying performance anti-patterns in source code and profiling
-output, and optimizing benchmarks from the Phoronix Test Suite.
+Apple silicon (macOS / iOS, arm64). The skills give an agent structured, multi-step
+workflows for profiling with Instruments / `xctrace`, identifying performance
+anti-patterns in source code and profiling output, writing ASIMD / SSVE / SME
+kernels, and optimizing benchmarks from the Phoronix Test Suite.
+
+These skills are **not** affiliated with Apple or Intel. They do not redistribute the
+Apple Silicon CPU Optimization Guide. See [COPYRIGHT.md](COPYRIGHT.md).
 
 ## Example prompts
 
 Once installed, you can talk to the agent naturally. A few examples:
 
-**Profile a workload and find hotspots**
-> Please profile `./myapp --bench` and tell me where the time goes.
+**Profile a workload with Instruments**
+> Please profile `./myapp --bench` in Instruments (CPU Profiler / CPU Bottlenecks) and tell me where the time goes.
 
 **Identify why a loop is slow**
-> This function runs at 0.3 IPC despite low cache misses. What's wrong, and how do I fix it?
+> This function is Discarded-bound in CPU Bottlenecks despite low cache misses. What's wrong, and how do I fix it?
 
 **Optimize from source code alone**
 > Review this dot-product loop for performance issues:
 > ```c
 > for (int i = 0; i < n; i++) sum += a[i] * b[i];
 > ```
+> Check Accelerate / `vDSP_dotpr` before writing NEON.
 
-**Cache-line contention**
-> My server gets slower as I add threads. Can you use `perf c2c` to find false sharing?
+**128 B false sharing**
+> My server gets slower as I add threads. Check whether independent per-thread fields share a 128-byte cache line.
 
-**Core-count scaling**
-> This workload doesn't scale past 8 cores. Help me find the bottleneck.
+**P/E cores and QoS**
+> This OpenMP loop uses `schedule(static)` and does not scale on M-series. Are we stalling on E cores? How should we hint QoS?
+
+**SME engine bounce**
+> This GEMM does `SMSTART` and then immediately consumes the result with core ASIMD. What's wrong?
 
 **Phoronix benchmark optimization**
-> Profile `pts/compress-zstd` and optimize it. Report the before/after improvement.
+> Profile `pts/compress-zstd` and optimize it. Try Compression.framework before a hand kernel. Report the before/after improvement.
 
 **Write new SIMD code correctly**
-> Write a vectorized AVX2 float array scale function with CPU dispatch.
+> Write a vectorized float array scale with `vfmaq_f32`, 128-byte padding, and `sysctl` feature checks — not AVX2.
+
+**Hangs / launch without clicking Instruments**
+> Wire MetricKit, add an XCTest `XCTClockMetric` on first draw, and record `xctrace` App Launch. If the main thread does `String(contentsOf: url)`, move it off main.
 
 ---
 
@@ -39,36 +50,41 @@ Once installed, you can talk to the agent naturally. A few examples:
 
 | Directory | Purpose |
 |-----------|---------|
-| `skills/linux-perf/` | Data collection skill: `perf` workflows, building blocks, hotspot reporting |
+| `skills/apple-silicon-profile/` | Data collection skill: Instruments, `xctrace`, CPU Counters, CPU Bottlenecks, hotspot reporting |
 | `skills/performance-patterns/` | Pattern detection and fix playbooks: source code and profiling signals |
-| `skills/phoronix-test-suite/` | Supporting skill: install, run, and optimize PTS benchmarks |
+| `skills/apple-silicon-codegen/` | Writing new integer / ASIMD / SSVE / SME kernels from Guide 5.0 rules |
+| `skills/phoronix-test-suite/` | Supporting skill: install, run, and optimize PTS benchmarks on native arm64 |
 
 ---
 
 ## Skills
 
-### `linux-perf` — profiling data collection
+### `apple-silicon-profile` — profiling data collection
 
-**Profile Linux workloads with `perf` and identify performance bottlenecks.**
+**Profile Apple silicon workloads with Instruments / `xctrace` and identify performance bottlenecks.**
 
 When the user asks why code is slow, this skill guides data collection from hardware
-counters through to annotated hotspot reports. It provides:
+counters through to annotated hotspot reports. It replaces Linux `perf` on this
+platform. It provides CPU Counters, CPU Profiler (cycle PMI — Time Profiler is
+wall-clock and is not the ISA tool), CPU Bottlenecks (Useful / Discarded / Delivery /
+Processing; Instruments 26+), AMP scaling across S/P/E cores, contention without
+`perf c2c`, and SME-engine views.
 
-- **Flow A** — `perf stat`: quick IPC, cache-miss rate, and branch-miss rate in seconds.
-- **Flow B** — `perf record` + `perf report`: which functions and source lines consume CPU.
-- **Flow C** — `perf c2c`: cache-line contention, false sharing, and HITM events in
-  multi-threaded code.
-- **Flow D** — dual-profile scaling analysis: identify bottlenecks that only appear at
-  high core counts.
-- **Flow E** — structured hotspot report: formatted deliverable with top-function table,
-  annotated source, and pattern observations.
-- **Annotate pattern scan**: scan `perf annotate` output for scalar FP, narrow SIMD,
-  serial accumulators, horizontal reductions, lock CAS, and memory pressure patterns.
+It also owns shipping-app loops that an agent can run without clicking
+Xcode: MetricKit subscribe-and-JSON (Flow G), XCTest `measure` via
+`xcodebuild` (Flow H), app-level `xctrace` templates for hangs / hitches /
+launch / Allocations / File Activity / Processor Trace / SwiftUI (Flow I),
+and crash/jetsam/watchdog symbolication with `atos` / `xcrun crashlog`
+(Flow J).
 
-When a pattern is identified, `linux-perf` hands off to `performance-patterns` for the fix.
+When a pattern is identified, `apple-silicon-profile` hands off to
+`performance-patterns` for the fix. When the fix is a new kernel, hand off to
+`apple-silicon-codegen`.
 
-Trigger phrases: *"profile"*, *"hotspot"*, *"IPC"*, *"cache miss"*, *"false sharing"*,
-*"HITM"*, *"does not scale"*, *"why is this slow"*, *"where does time go"*.
+Trigger phrases: *"profile"*, *"Instruments"*, *"xctrace"*, *"hotspot"*, *"CPU Bottlenecks"*,
+*"MetricKit"*, *"hang"*, *"hitch"*, *"launch time"*, *"dSYM"*, *"0x8badf00d"*,
+*"false sharing"*, *"P cores"*, *"E cores"*, *"does not scale"*, *"why is this slow"*,
+*"where does time go"*.
 
 ---
 
@@ -77,36 +93,47 @@ Trigger phrases: *"profile"*, *"hotspot"*, *"IPC"*, *"cache miss"*, *"false shar
 **Detect and fix well-known performance anti-patterns — from source code or profiling output.**
 
 This skill owns the full catalog of patterns with detection signals and fix playbooks.
-It works standalone (source review only) or in combination with `linux-perf` (profiling
-data). Patterns covered:
-
-| Pattern | Detection signal | Fix |
-|---------|-----------------|-----|
-| Serial accumulator | Low IPC + low cache misses; `vaddss`/`vfmadd` dominates annotate | Multiple independent accumulators + SIMD |
-| Narrow SIMD | `xmm`/scalar in hot loop on AVX2/AVX-512 CPU | Vector width upconversion (zipper algorithm) |
-| Missing `vzeroupper` | `other_assists.avx_to_sse` > 0; extreme cycle count on first SSE instruction | Insert `vzeroupper` before SSE transitions |
-| Missing `restrict` | Aliasing preamble before vectorizable loop; two loop versions in annotate | Add `restrict` to pointer parameters |
-| Test-and-Set spinlock | `lock cmpxchg` cluster in annotate; throughput drops with more threads | Test-and-Test-and-Set (TTAS) |
-| False sharing | `perf c2c` HITM > 5%; different offsets written by different threads | Struct padding and layout reorganisation |
-| Shared statistics counter | `lock add`/`lock inc` in hot path; true sharing in `perf c2c` | Per-CPU bucket array or local batching |
+It works standalone (source review only) or in combination with `apple-silicon-profile`.
+Patterns include serial accumulators, 128 B false sharing, taken-branch density and
+`CSEL`, GPR↔vector moves, fused `FMLA`/`MADD`, Accelerate-first, AMP work partition
+and QoS, spin-wait, weakly ordered memory, `sysctl` hardcoding, store-to-load
+forwarding, unaligned streams, software prefetch, JIT I-cache invalidation,
+core↔SME engine bounce, main-thread blocking / watchdog, dirty 16 KiB pages and
+disk writes, and SwiftUI update cost.
 
 Also provides guidelines for writing new performance-sensitive C/C++ and SIMD code
 correctly from the start.
 
 Trigger phrases: *"optimize"*, *"vectorize"*, *"why is this slow"*, *"review for
-performance"*, *"improve throughput"*, *"write a fast…"*, any `_mm*` intrinsics or
-inline asm with `xmm`/`ymm`/`zmm` registers.
+performance"*, *"improve throughput"*, *"write a fast…"*, any `vld1q` / `vfmaq` /
+`FMLA` / `SMSTART` / `vDSP_` / GCD / QoS code.
+
+---
+
+### `apple-silicon-codegen` — writing new kernels
+
+**Write new performance-sensitive integer, ASIMD, SSVE, and SME kernels** using the
+Apple Silicon CPU Optimization Guide 5.0 rules (ISA selection, addressing, register
+pressure, ZA + Processing Grid, 4 KiB isolation, sysctl constants). Also owns the
+Apple ARM64 ABI (`X18`, `long double` == `double`, stack variadics), DIT
+(`<timingsafe.h>`), and PAC / `arm64e` / `ptrauth.h`. Invoke when the
+user asks to write a kernel, or when `performance-patterns` has ruled out a platform
+library and a hand implementation is justified.
+
+Trigger phrases: *"write a NEON…"*, *"SME kernel"*, *"FMOPA"*, *"arm_neon.h"*,
+*"intrinsics for…"*, *"arm64e"*, *"PAC"*, *"DIT"*.
 
 ---
 
 ### `phoronix-test-suite` — supporting skill
 
-**Install, run, and optimize benchmarks from the Phoronix Test Suite.**
+**Install, run, and optimize benchmarks from the Phoronix Test Suite on native arm64.**
 
-Invoked automatically by `linux-perf` when the profiling target is a `pts/<name>`
-benchmark. Handles the full lifecycle: install, source extraction, rebuild with
-debug symbols, binary deployment, and result recording. Knows the correct
-`install.sh` build flags and source layout for each test.
+Invoked automatically when the profiling target is a `pts/<name>` benchmark. Handles
+the full lifecycle: install, source extraction, rebuild with `-g` + dSYM, binary
+deployment, and result recording. Optimization hands off to `apple-silicon-profile`,
+`performance-patterns`, and `apple-silicon-codegen`. Tries Accelerate / Compression
+before a BLAS or gzip rewrite. Aborts if `sysctl.proc_translated == 1`.
 
 Trigger: any `pts/<name>` reference, or the words *"phoronix"* / *"phoronix-test-suite"*.
 
@@ -133,17 +160,19 @@ The easiest way to install across any supported agent. Requires
 [GitHub CLI v2.90.0](https://github.com/cli/cli/releases/tag/v2.90.0) or later.
 
 ```bash
-# Install all skills (user-level)
-gh skill install intel/intel-performance-skills linux-perf
-gh skill install intel/intel-performance-skills performance-patterns
-gh skill install intel/intel-performance-skills phoronix-test-suite
+# Install all skills (user-level). Replace OWNER/REPO with this repository.
+gh skill install OWNER/REPO apple-silicon-profile
+gh skill install OWNER/REPO performance-patterns
+gh skill install OWNER/REPO apple-silicon-codegen
+gh skill install OWNER/REPO phoronix-test-suite
 ```
 
 Keep them up to date:
 
 ```bash
-gh skill update linux-perf
+gh skill update apple-silicon-profile
 gh skill update performance-patterns
+gh skill update apple-silicon-codegen
 gh skill update phoronix-test-suite
 ```
 
@@ -152,8 +181,9 @@ gh skill update phoronix-test-suite
 Skills are installed per-user under `~/.copilot/skills/`:
 
 ```bash
-cp -r skills/linux-perf ~/.copilot/skills/
+cp -r skills/apple-silicon-profile ~/.copilot/skills/
 cp -r skills/performance-patterns ~/.copilot/skills/
+cp -r skills/apple-silicon-codegen ~/.copilot/skills/
 cp -r skills/phoronix-test-suite ~/.copilot/skills/
 ```
 
@@ -166,11 +196,13 @@ whole team benefits automatically:
 ```bash
 # Project-level (commit to your repository)
 mkdir -p .github/skills
-cp -r skills/linux-perf skills/performance-patterns skills/phoronix-test-suite \
+cp -r skills/apple-silicon-profile skills/performance-patterns \
+      skills/apple-silicon-codegen skills/phoronix-test-suite \
     .github/skills/
 
 # User-level (available in every project)
-cp -r skills/linux-perf skills/performance-patterns skills/phoronix-test-suite \
+cp -r skills/apple-silicon-profile skills/performance-patterns \
+      skills/apple-silicon-codegen skills/phoronix-test-suite \
     ~/.copilot/skills/
 ```
 
@@ -185,11 +217,13 @@ Claude Code discovers skills in `.claude/skills/` (project) or `~/.claude/skills
 ```bash
 # Project-level
 mkdir -p .claude/skills
-cp -r skills/linux-perf skills/performance-patterns skills/phoronix-test-suite \
+cp -r skills/apple-silicon-profile skills/performance-patterns \
+      skills/apple-silicon-codegen skills/phoronix-test-suite \
     .claude/skills/
 
 # User-level
-cp -r skills/linux-perf skills/performance-patterns skills/phoronix-test-suite \
+cp -r skills/apple-silicon-profile skills/performance-patterns \
+      skills/apple-silicon-codegen skills/phoronix-test-suite \
     ~/.claude/skills/
 ```
 
@@ -201,11 +235,13 @@ at user level:
 ```bash
 # Project-level
 mkdir -p .agents/skills
-cp -r skills/linux-perf skills/performance-patterns skills/phoronix-test-suite \
+cp -r skills/apple-silicon-profile skills/performance-patterns \
+      skills/apple-silicon-codegen skills/phoronix-test-suite \
     .agents/skills/
 
 # User-level
-cp -r skills/linux-perf skills/performance-patterns skills/phoronix-test-suite \
+cp -r skills/apple-silicon-profile skills/performance-patterns \
+      skills/apple-silicon-codegen skills/phoronix-test-suite \
     ~/.agents/skills/
 ```
 
@@ -215,7 +251,8 @@ Gemini CLI reads project skills from `.gemini/skills/`:
 
 ```bash
 mkdir -p .gemini/skills
-cp -r skills/linux-perf skills/performance-patterns skills/phoronix-test-suite \
+cp -r skills/apple-silicon-profile skills/performance-patterns \
+      skills/apple-silicon-codegen skills/phoronix-test-suite \
     .gemini/skills/
 ```
 
@@ -225,7 +262,8 @@ OpenCode has native skill support and reads skills from `.opencode/skills/`:
 
 ```bash
 mkdir -p .opencode/skills
-cp -r skills/linux-perf skills/performance-patterns skills/phoronix-test-suite \
+cp -r skills/apple-silicon-profile skills/performance-patterns \
+      skills/apple-silicon-codegen skills/phoronix-test-suite \
     .opencode/skills/
 ```
 
@@ -235,4 +273,10 @@ For user-level installation, copy to `~/.config/opencode/skills/` instead.
 
 ## License
 
-Copyright (C) 2026 Intel Corporation. Released under the [MIT License](COPYRIGHT.md).
+Released under the [MIT License](COPYRIGHT.md). Copyright (c) 2026 the skill authors.
+
+Directory layout and workflow structure are derived from Intel Corporation's
+"Intel Performance Skills" (MIT License, 2026). Optimization rules are original
+paraphrases of the Apple Silicon CPU Optimization Guide 5.0 (Apple Inc.,
+registered-developer material — the Guide itself is not redistributed here).
+This project does not claim Apple copyright on the skills.

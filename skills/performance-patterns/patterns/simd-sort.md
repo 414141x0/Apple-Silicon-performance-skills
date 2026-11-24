@@ -1,4 +1,7 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Pattern: SIMD Sort
 
 ## When to apply
@@ -16,11 +19,10 @@ The data type is the key signal. This pattern applies to the six numeric
 primitive types listed above. It does not apply to sorts of strings, pointers,
 or complex objects without a numeric key.
 
-**From a profile** — `std::sort`, `_introsort_loop`, `__gnu_cxx::__ops`,
-`std::__sort`, or `std::__introsort` appearing prominently in `perf report`
-or `perf annotate` on a workload that sorts numeric data. The sort is often
-visible as a cluster of comparison + swap instructions with high branch
-misprediction rates (`perf stat` shows elevated `branch-misses`).
+**From a profile** — `std::sort`, introsort, or `qsort` appearing prominently
+in CPU Profiler on a workload that sorts numeric data. Discarded /
+branch-mispredict events are often elevated — introsort's comparator
+branches are hard to predict.
 
 ---
 
@@ -28,119 +30,83 @@ misprediction rates (`perf stat` shows elevated `branch-misses`).
 
 `std::sort` uses introsort — a hybrid of quicksort, heapsort, and insertion
 sort — operating on one element at a time. Every comparison is a branch, and
-partitioning an array of n elements requires O(n log n) comparisons with no
-data parallelism. Modern CPUs support AVX-512 operations that touch 16 floats
-(or 8 doubles) simultaneously; `std::sort` uses none of this capacity.
-
-**x86-simd-sort** (https://github.com/numpy/x86-simd-sort) vectorizes the
-quicksort partitioning step using AVX-512 `vcompressps`/`vpcompressd`
-instructions, and uses SIMD sorting networks for small sub-arrays (below
-~64–512 elements depending on type). The result is 3–8× faster than
-`std::sort` for numeric primitive arrays on AVX-512 hardware, with an AVX2
-fallback (~2–4×). The library auto-selects the best available path at
-runtime. It is used in production by NumPy, PyTorch, and OpenJDK.
+partitioning n elements takes O(n log n) comparisons with no data
+parallelism. ASIMD can compare four floats (or two doubles) per instruction;
+Accelerate and Highway use that. An x86 SIMD-sort GitHub repo does not.
 
 ---
 
 ## The fix
 
-### Step 1 — Install the library
+Apply in this order:
 
-**Option A: installed library (recommended for projects with a build system)**
+### 1. Accelerate / vDSP where it fits
 
-```bash
-git clone https://github.com/numpy/x86-simd-sort
-cd x86-simd-sort
-meson setup --buildtype release builddir && cd builddir
-meson compile
-sudo meson install
-# then in your build: pkg-config --cflags --libs x86simdsortcpp
+`vDSP_vsort` / `vDSP_vsorti` sort `float` and `double` in place (and with
+indices). Use them when the array is exactly that type and stability is
+not required.
+
+```c
+#include <Accelerate/Accelerate.h>
+
+/* order: 1 = ascending, -1 = descending */
+vDSP_vsort(arr, n, 1);
 ```
 
-As a Meson subproject, add to `meson.build`:
-```meson
-xss = subproject('x86-simd-sort')
-xss_dep = xss.get_variable('x86simdsortcpp_dep')
-```
+Check Accelerate first even for "just a sort of floats" —
+`patterns/platform-libs-first.md`.
 
-**Option B: header-only (no install, compile-time ISA selection)**
+### 2. `std::sort` for general objects
 
-Copy `src/x86simdsort-static-incl.h` into your source tree and include it.
-Compile with `-mavx512f -mavx512dq -mavx512vl -O3` for AVX-512, or
-`-mavx2 -O3` for AVX2. No runtime dispatch — the ISA is fixed at compile time.
+For structs, strings, or anything without a packed numeric key,
+`std::sort` is acceptable. Do not vectorize a comparator of arbitrary
+objects.
 
-### Step 2 — Replace call sites
+### 3. Highway or an ARM-ported simd-sort
+
+If a vectorized numeric sort is required (int32/int64, or float when
+vDSP is unavailable), use [Highway](https://github.com/google/highway)
+`vqsort` or an ARM-ported simd-sort. Highway dispatches on the running
+CPU; compile with `-mcpu=apple-m1` (or later) and still keep a scalar
+fallback.
 
 ```cpp
-#include "x86simdsort.h"   // installed library
-// or: #include "x86simdsort-static-incl.h"  // header-only
+#include "hwy/contrib/sort/vqsort.h"
+hwy::VQSort(arr, n, hwy::SortAscending());
 ```
 
-| C++ standard | x86simdsort equivalent | Notes |
-|---|---|---|
-| `std::sort(p, p+n)` | `x86simdsort::qsort(p, n, hasnan)` | Not stable |
-| `std::nth_element(p, p+k, p+n)` | `x86simdsort::qselect(p, k, n, hasnan)` | Equivalent |
-| `std::partial_sort(p, p+k, p+n)` | `x86simdsort::partial_qsort(p, k, n, hasnan)` | Equivalent |
-| `std::stable_sort` | *(no equivalent — see caveats)* | |
-| sort two arrays together | `x86simdsort::keyvalue_qsort(keys, vals, n, hasnan)` | 32/64-bit only |
-| get sort indices | `x86simdsort::argsort(p, n, hasnan)` | Returns `std::vector<size_t>` |
+### 4. Do not recommend numpy / x86-simd-sort on M-series
 
-**Example — replacing std::sort on a float array:**
+Those trees are AVX-512 `vcompressps` code. They will not build usefully
+for AArch64 and are the wrong dependency.
 
-```cpp
-// Before
-std::sort(arr.data(), arr.data() + n);
+### Replacing call sites
 
-// After
-x86simdsort::qsort(arr.data(), n, /*hasnan=*/false);
-```
+| Need | Use |
+|------|-----|
+| `float`/`double` array, unstable | `vDSP_vsort` |
+| `std::sort` on general objects | keep `std::sort` |
+| numeric primitives, vectorized | Highway `vqsort` |
+| `std::stable_sort` | keep it — no drop-in vectorized stable sort here |
+| `std::nth_element` / `partial_sort` | `std::nth_element` / Highway if available |
 
-**Sorting custom objects by a numeric key:**
-
-```cpp
-// Sorts by the x member; O(N) extra space, benchmark before using
-x86simdsort::object_qsort(points.data(), points.size(),
-    [](const Point& p) { return p.x; });
-```
-
-### Step 3 — Set the `hasnan` flag correctly
-
-The `hasnan` parameter (default `false`) must be set to `true` if the
-floating-point array may contain NaN values. With `hasnan = false` and NaN
-present, behavior is **undefined**.
-
-When `hasnan = true`: NaNs are moved to the end of the array. For `qsort`,
-bit-exact NaN values are **not preserved** — all NaNs become
-`std::numeric_limits<T>::quiet_NaN()`. For `qselect` and `partial_qsort`,
-the original bit-exact NaNs are preserved. For `argsort`/`argselect` with
-NaN detected, the algorithm silently falls back to scalar `std::sort` (no
-SIMD speedup).
-
-Integer types (`int32_t`, `uint32_t`, `int64_t`, `uint64_t`) have no NaN;
-always pass `hasnan = false`.
+**NaN.** Document the policy. vDSP does not treat NaN the way IEEE
+`std::sort` with a NaN-aware comparator does. If NaN is possible, either
+filter first or stay on `std::sort`.
 
 ---
 
 ## Verification
 
 ```cpp
-// Correctness check: compare against std::sort on a copy
 std::vector<float> ref = arr;
 std::sort(ref.begin(), ref.end());
-x86simdsort::qsort(arr.data(), arr.size(), false);
+vDSP_vsort(arr.data(), arr.size(), 1);
 assert(arr == ref);
-
-// Timing (rough): time both sorts over the same data
-auto t0 = std::chrono::high_resolution_clock::now();
-x86simdsort::qsort(arr.data(), n, false);
-auto t1 = std::chrono::high_resolution_clock::now();
-// compare against std::sort on identical input
 ```
 
-Compile-time check for C++17:
-```bash
-g++ -std=c++17 -O3 ... your_file.cpp
-```
+Time both with `clock_gettime_nsec_np` on identical input. Compile C++
+with `-std=c++17 -O3 -mcpu=apple-m1`.
 
 ---
 
@@ -148,27 +114,19 @@ g++ -std=c++17 -O3 ... your_file.cpp
 
 | Caveat | Detail |
 |--------|--------|
-| **C++17 required** | GCC ≥ 8, Clang ≥ 8, MSVC ≥ 2019 (16.8) |
-| **Not a stable sort** | Relative order of equal elements is not preserved. No drop-in for `std::stable_sort` |
-| **NaN undefined without `hasnan`** | Always set `hasnan = true` for float/double if NaN is possible |
-| **NaN bit-exactness** | `qsort` with `hasnan=true` replaces all NaN with quiet_NaN; `qselect`/`partial_qsort` preserve the original NaN bits |
-| **argsort + NaN → scalar fallback** | SIMD argsort/argselect silently degrades to `std::sort` when NaN is detected |
-| **`object_qsort` O(N) space** | Allocates `n * sizeof(key_t) + n * sizeof(uint32_t)` bytes; profile the key function and measure before using |
-| **AVX-512 ISA for 16-bit types** | `uint16_t`/`int16_t`/`_Float16` require AVX-512BW/VBMI2/FP16; 32/64-bit types work with AVX2 |
-| **Header-only = compile-time ISA** | `x86simdsort-static-incl.h` requires explicit `-mavx512f` or `-mavx2`; no runtime dispatch |
+| **Not a stable sort** | vDSP and Highway vqsort do not preserve equal-element order |
+| **NaN** | Define a policy; vDSP ≠ IEEE `std::sort` |
+| **float/double vs integers** | vDSP covers float/double; integers need Highway or `std::sort` |
+| **No x86-simd-sort** | Do not add that repo on Apple silicon |
 
 ---
 
 ## Presenting this to the user
 
-Lead with the replacement table and a concrete before/after for their call site.
-Then highlight:
+Lead with the replacement table and a concrete before/after for their
+call site. Then:
 
-1. **Why it's faster** (vectorized partitioning + sorting networks — not just "SIMD")
-2. **The `hasnan` flag** — this is the most common correctness pitfall; always address it
-3. **Stability** — only mention if the existing code uses `std::stable_sort`
-4. **Production validation** — NumPy, PyTorch, OpenJDK all ship this; it is not experimental
-
-Do not suggest benchmarking before adopting for straightforward array sorts of
-the supported types — the speedup is well-established. Do recommend benchmarking
-for `object_qsort` with expensive key functions before committing to it.
+1. **Why it's faster** (packed compares / Accelerate, not "SIMD" as a slogan)
+2. **Stability** — only if the existing code uses `std::stable_sort`
+3. **NaN** — address it when the type is FP
+4. **Do not** clone an x86 sort library onto M-series

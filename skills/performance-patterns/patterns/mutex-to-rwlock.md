@@ -1,125 +1,62 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
-# Pattern: mutex protecting read-heavy operations → rwlock
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
+# Pattern: mutex protecting read-heavy operations → rwlock / GCD
 
 ## When to apply
 
-Apply when a mutex (kernel `mutex` or user-space `pthread_mutex`) protects a
-critical section where the majority of acquisitions perform only reads. Under
-contention at high core counts, all readers serialize on the mutex even though
-they do not conflict with each other.
+Apply when a user-space mutex (`pthread_mutex`, `os_unfair_lock`, a serial
+GCD queue used as a lock) protects a critical section where the majority of
+acquisitions perform only reads. Under contention, all readers serialize even
+though they do not conflict.
 
 ### Source code signals
 
-- `mutex_lock()` / `pthread_mutex_lock()` guarding a lookup, search, or status
-  check that rarely modifies the protected data
-- Critical section contains read operations (cache lookup, tree search,
-  configuration read) in the common path, with writes only on a rare branch
-  (creation, insertion, update)
-- Read-to-write ratio exceeds ~75% (the crossover threshold where rwlock wins)
-- The protected data structure is long-lived and accessed by many threads
+- `pthread_mutex_lock()` / `os_unfair_lock_lock()` guarding a lookup, search,
+  or status check that rarely modifies the protected data
+- Critical section is read operations (cache lookup, tree search, config
+  read) in the common path, with writes only on a rare branch
+- Read-to-write ratio exceeds ~75% (the crossover where a reader-writer
+  lock wins)
+- The protected structure is long-lived and accessed by many threads
   (unit table, connection pool, routing table, config cache)
 
 ### Profiling signals
 
-- `osq_lock` prominent in `perf report` — this is the Optimistic Spin Queue,
-  the spinning phase of the Linux kernel mutex fast path; high cycles here mean
-  threads are spinning waiting for a mutex holder
-- `mutex_lock` / `__mutex_lock_slowpath` / `__mutex_lock.constprop.0` in the
-  hotspot list
-- `native_queued_spin_lock_slowpath` under a `mutex_lock` call chain (the mutex
-  internally uses a spinlock to protect its wait queue)
-- IPC drops dramatically as core count grows while user-space work remains
-  constant — the incremental cycles come from lock contention
-- Kernel cycle ratio increases with core count (user-space mutex slow path
-  enters kernel via `futex_wait`; this signal applies to `pthread_mutex`, not
-  kernel `mutex`)
-- `perf lock stat` shows high `contentions` relative to `acquisitions` and
-  `wait_total` >> `hold_total` for the identified mutex
+- `pthread_mutex_lock`, `psynch_mutexwait`, `psynch_mutexdrop`, or
+  `os_unfair_lock` prominent in CPU Profiler
+- Dual-profile: Useful / throughput drops as thread count grows while
+  user-space work stays constant — incremental cycles are lock
+  serialization
+- Call chain traces to a mutex around a lookup/search that rarely writes
 
 ---
 
 ## Why this is slow
 
 A mutex forces every acquisition — even read-only ones — to take exclusive
-ownership of its cache line via `LOCK CMPXCHG`, so N concurrent readers fully
-serialize. At HCC scale (100+ cores) this means O(N) wait time per reader,
-kernel mutexes burning cycles in optimistic (OSQ) spin, and the lock's cache
-line bouncing between cores on every handoff. When `osq_lock` dominates
-`perf`, threads are stuck in this midpath spin because the holder (doing brief
-read-only work) isn't releasing fast enough for the queue of waiters.
+ownership of its 128 B line. N concurrent readers fully serialize. At high
+thread counts this is O(N) wait per reader, plus `psynch_mutexwait` in the
+kernel when the uncontended CAS fails. Readers blocking each other is pure
+overhead.
 
 ---
 
-## The fix: replace mutex with rwlock
+## The fix
 
-An rwlock (read-write lock) distinguishes read acquisitions from write
-acquisitions:
+Pick the Darwin primitive that matches the section:
 
-- **Readers** hold the lock in Shared mode — multiple readers proceed
-  simultaneously with greatly reduced serialization compared to a mutex
-  (reader-count updates still produce some coherence traffic, but there is no
-  exclusive handoff between readers)
-- **Writers** hold the lock in Exclusive mode — same as mutex behavior
-
-Scaling is sub-linear at high core counts — the reader-count atomic update
-bounces a single cache line across all active cores, capping throughput once
-coherence latency dominates the critical section.
-
-### Kernel space
-
-```c
-// Before: mutex protecting read-heavy lookup
-static DEFINE_MUTEX(unit_lock);
-
-void get_unit(int n) {
-    mutex_lock(&unit_lock);
-    unit = search_cache(n);
-    if (!unit) unit = search_tree(n);
-    if (!unit) {
-        unit = create_unit(n);
-        insert_tree(n, unit);
-    }
-    mutex_unlock(&unit_lock);
-}
-
-// After: rwlock separating read and write paths
-// Note: rwlock_t is spin-based and must NOT be held across sleeping operations.
-// For sleepable critical sections, use rw_semaphore instead:
-//   DECLARE_RWSEM(unit_lock); down_read/up_read; down_write/up_write
-static DEFINE_RWLOCK(unit_lock);
-
-void get_unit(int n) {
-    read_lock(&unit_lock);
-    unit = search_cache(n);
-    if (!unit) unit = search_tree(n);
-    read_unlock(&unit_lock);
-
-    if (!unit) {
-        write_lock(&unit_lock);
-        // Double-check after upgrading to write lock
-        unit = search_tree(n);
-        if (!unit) {
-            unit = create_unit(n);
-            insert_tree(n, unit);
-        }
-        write_unlock(&unit_lock);
-    }
-}
-```
+| Situation | Primitive |
+|-----------|-----------|
+| Many concurrent readers, rare writers | `pthread_rwlock` |
+| Same, in Apple-only code | GCD concurrent queue; `dispatch_barrier_*` for writes |
+| Short exclusive section, not read-mostly | keep `os_unfair_lock` — do not invent a lock |
+| Cross-platform C++ | `std::shared_mutex` |
 
 ### User space (pthreads)
 
 ```c
-// Before
-pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-
-void lookup(int key) {
-    pthread_mutex_lock(&lock);
-    result = search(table, key);
-    pthread_mutex_unlock(&lock);
-}
-
-// After
 pthread_rwlock_t lock = PTHREAD_RWLOCK_INITIALIZER;
 
 void lookup(int key) {
@@ -135,10 +72,53 @@ void insert(int key, void *value) {
 }
 ```
 
+### GCD concurrent vs serial queue
+
+```c
+#include <dispatch/dispatch.h>
+
+static dispatch_queue_t q;
+
+void init_q(void) {
+    q = dispatch_queue_create("table",
+            DISPATCH_QUEUE_CONCURRENT);
+}
+
+void lookup(int key) {
+    dispatch_sync(q, ^{
+        result = search(table, key);
+    });
+}
+
+void insert(int key, void *value) {
+    dispatch_barrier_sync(q, ^{
+        add(table, key, value);
+    });
+}
+```
+
+Readers run concurrently; barrier writes drain them first. QoS on the
+queue hints S/P vs E.
+
+### Short exclusive: `os_unfair_lock`
+
+If the critical section is a handful of instructions and *not* read-mostly,
+`os_unfair_lock` is the right tool — it is tuned per chip. Do not replace
+it with a homemade rwlock.
+
+```c
+#include <os/lock.h>
+static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+
+os_unfair_lock_lock(&lock);
+/* short exclusive work */
+os_unfair_lock_unlock(&lock);
+```
+
 ### Double-check on the write path
 
-When the read path discovers a write is needed (e.g., cache miss requiring
-insertion), a double-check after acquiring the write lock is necessary:
+When the read path discovers a write is needed (cache miss requiring
+insertion), double-check after acquiring the write lock:
 
 ```c
 pthread_rwlock_rdlock(&lock);
@@ -147,28 +127,21 @@ pthread_rwlock_unlock(&lock);
 
 if (!unit) {
     pthread_rwlock_wrlock(&lock);
-    unit = search(table, key);  // double-check: another thread may have inserted
-    if (!unit) {
+    unit = search(table, key);  /* another thread may have inserted */
+    if (!unit)
         unit = create_and_insert(table, key);
-    }
     pthread_rwlock_unlock(&lock);
 }
 ```
 
-The window between releasing the read lock and acquiring the write lock allows
-another thread to perform the same insertion. Without double-check, duplicate
-entries or corruption can result.
-
 ### When NOT to apply
 
-- **Write-heavy workloads** (>50% writes): rwlock has higher per-operation
-  overhead than mutex; writer acquisition must invalidate all Shared copies,
-  which is more expensive than a single Modified→Modified transfer
-- **Very short critical sections** (a few instructions): rwlock bookkeeping
-  overhead may exceed the serialization cost of a plain mutex
-- **Writer starvation concerns**: some rwlock implementations allow readers to
-  starve writers indefinitely; if writes are time-sensitive, consider
-  `PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP`
+- **Write-heavy** (>50% writes): rwlock bookkeeping loses to a mutex;
+  writer acquisition must invalidate Shared copies
+- **Very short critical sections**: rwlock overhead may exceed mutex
+  serialization — use `os_unfair_lock`
+- **Writer starvation**: if writes are time-sensitive, prefer a GCD
+  barrier (fairer) or accept mutex
 
 ---
 
@@ -176,37 +149,26 @@ entries or corruption can result.
 
 After applying the fix:
 
-1. **Correctness** — run the existing test suite; read/write semantics must be
-   preserved. Pay special attention to the double-check on the write path.
-2. **Profiling** — rerun `perf report`; `osq_lock` / `mutex_lock` /
-   `__mutex_lock_slowpath` should disappear or drop to negligible levels.
-3. **IPC recovery** — `perf stat` should show IPC recovering to normal levels
-   as core count grows (in one observed case, ~9× IPC improvement was measured).
-4. **Kernel ratio** — if the mutex slow path was entering the kernel, kernel
-   cycle ratio should drop significantly.
-5. **Scaling test** — measure throughput at multiple core counts; the curve
-   should now scale with readers rather than flattening or declining.
-
-A reproducible micro-benchmark and collected profiling data are available in
-`patterns/tests/` (`mutex-to-rwlock-bench.c` and `run-mutex-to-rwlock-bench.sh`).
+1. **Correctness** — existing tests; pay attention to the double-check on
+   the write path.
+2. **Profiling** — CPU Profiler: `psynch_mutexwait` / `pthread_mutex_lock`
+   drop; rwlock stays in user-space atomics or GCD.
+3. **Scaling** — throughput vs thread count now scales with readers rather
+   than flattening. Record QoS and `hw.nperflevels` with the numbers.
+4. Microbenchmark: `patterns/tests/mutex-to-rwlock-bench.c` and
+   `run-mutex-to-rwlock-bench.sh`. Profile with `xctrace` CPU Profiler,
+   not `perf`.
 
 ---
 
 ## Presenting this to the user
 
-1. Show the `perf report` output with `osq_lock` / `mutex_lock` highlighted and
-   its cycle percentage.
-2. Identify the mutex from the call chain and show the critical section source
-   code.
-3. Annotate which operations are reads vs. writes, and state the estimated
-   read/write ratio.
-4. Explain in one paragraph: "A mutex serializes all readers even though they
-   don't conflict. With N cores, each reader waits for N-1 predecessors. An
-   rwlock lets all readers proceed simultaneously — there is no exclusive
-   handoff between readers, eliminating the O(N) serialization. Some coherence
-   traffic remains for reader-count updates, but it is far less costly than
-   the full exclusive transfer a mutex requires."
-5. Present the before/after code with the separated read and write paths.
-6. Note the expected improvement range: 1.8–9× depending on read/write ratio
-   and core count (higher core counts see larger gains because the
-   serialization penalty is O(N)).
+1. Show the CPU Profiler output with `pthread_mutex_*` / `psynch_mutexwait`
+   highlighted.
+2. Identify the mutex from the call chain and show the critical section.
+3. Annotate reads vs writes and the estimated ratio.
+4. Explain in one paragraph: a mutex serializes readers that do not
+   conflict; an rwlock or GCD concurrent queue lets them proceed, with
+   some remaining coherence traffic on the reader-count line.
+5. Present before/after with separated read and write paths.
+6. Note `os_unfair_lock` stays correct for short exclusive sections.

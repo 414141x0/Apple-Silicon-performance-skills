@@ -1,86 +1,97 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Library version reference
 
-This file is loaded by `patterns/library-version-upgrade.md` when a hot symbol
-from a system library has been identified in profiling output.
+This file is loaded by `patterns/library-version-upgrade.md` when a hot
+symbol from a system dylib / framework has been identified in profiling
+output.
 
-Each row maps an internal symbol (as it appears in `perf report` / `perf
-annotate`) to the library that contains it, a suggested minimum version, and
-a brief reason.  When a symbol matches, detect the installed version using the
-primitives at the bottom of this file and report the gap.
+Each row maps a symbol (as it appears in CPU Profiler / `sample` /
+`nm`) to the Darwin library that should own it, how to detect the
+linked copy, and why the OS path is faster. When a symbol matches,
+detect the installed / linked version using the primitives at the
+bottom of this file and report the gap.
+
+Accelerate, vDSP, and BLAS implementations track **OS version**, not a
+`.so` soname. A bundled OpenBLAS on macOS 15 is still a gap.
 
 ---
 
 ## Version table
 
-| Symbol (as seen in perf) | `.so` file | Library | Suggested minimum version | Reason |
-|--------------------------|-----------|---------|--------------------------|--------|
-| `gcm_init_avx` | `libcrypto.so.3` | OpenSSL | 3.3 | Significant AVX-512 optimizations for AES-GCM in 3.3+ (Sapphire Rapids and later) |
-| `ossl_aes_gcm_encrypt_avx512` | `libcrypto.so.3` | OpenSSL | 3.3 | AVX-512 AES-GCM encrypt path present in earlier versions but significantly further optimized in 3.3+; if hot on a pre-3.3 system, upgrade for a material speedup |
-| `ossl_aes_gcm_init_avx512` | `libcrypto.so.3` | OpenSSL | 3.3 | AVX-512 AES-GCM init path present in earlier versions but significantly further optimized in 3.3+; if hot on a pre-3.3 system, upgrade for a material speedup |
-| `aesni_xts_256_encrypt_avx512` | `libcrypto.so.3` | OpenSSL | 3.3 | AVX-512 AES-XTS-256 path present in earlier versions but significantly further optimized in 3.3+; if hot on a pre-3.3 system, upgrade for a material speedup |
-| `aesni_xts_encrypt` | `libcrypto.so.3` | OpenSSL | 3.3 | Non-AVX-512 AES-XTS path; seeing this hot in profiles on a modern CPU means the AVX-512 variant (`aesni_xts_256_encrypt_avx512`) is absent — upgrade to OpenSSL 3.3 to get the faster implementation |
+| Symbol (as seen in a profile) | Dylib / framework | Library | Suggested path | Reason |
+|-------------------------------|-------------------|---------|----------------|--------|
+| `cblas_sgemm`, `cblas_dgemm`, `sgemm_`, `dgemm_` | `Accelerate.framework` / `libBLAS.dylib` | Accelerate BLAS | OS Accelerate, not bundled OpenBLAS/BLIS | Chip-tuned GEMM: ASIMD, SME on M4+, private matrix hardware you cannot emit on earlier chips |
+| `vDSP_dotpr`, `vDSP_mmul`, `vDSP_fft*`, `vDSP_vsort` | `Accelerate.framework` | vDSP | OS Accelerate | ASIMD / SME internally; do not ship a homemade FFT/dot |
+| `BNNSFilterApply`, `BNNSGraph` | `Accelerate.framework` | BNNS | OS Accelerate | Neural paths maintained per OS |
+| `memcpy`, `memmove`, `memset` | `libsystem_platform.dylib` / `libSystem.B.dylib` | libSystem | OS `memcpy` | Chip-tuned; homemade SIMD copies lose |
+| `compression_encode_buffer`, `compression_decode_buffer` | `Compression.framework` | Compression | OS Compression | LZFSE / LZ4 / ZLIB / LZMA, maintained per chip |
+| `AAArchiveStreamCreate`, `AAByteStream` | `AppleArchive.framework` | Apple Archive | OS Apple Archive | Tuned archive + compression |
+| `cccrc32`, `crc32` (zlib) | `libSystem` / `libz.dylib` | libSystem zlib | OS zlib if IEEE CRC-32 is enough | Not CRC32C (Castagnoli) — different polynomial |
+| `CCCrypt`, `CC_SHA256`, AES | `libcommonCrypto` / `Security.framework` | CommonCrypto | OS CommonCrypto, not an old OpenSSL `.dylib` | Hardware AES / SHA |
+| `vImage*` | `Accelerate.framework` | vImage | OS Accelerate | Image pipelines with ASIMD |
+
+If the hot symbol is homemade (`dot_neon`, `my_fft`) and the platform
+equivalent is **not linked**, switch to
+`patterns/platform-libs-first.md`.
 
 ---
 
 ## Version detection primitives
 
-When a symbol matches a row above, first try the **generic** method below.
-If it does not produce a useful version string, use the library-specific
-primitive that follows.
+When a symbol matches a row above, detect in this order. Do **not** use
+`ldconfig`, `ldd`, or `readlink -f`.
 
-### Generic: resolve the `.so` symlink
-
-Most system libraries encode their full version in the real filename.
-`readlink` on the `.so` name reveals it without any library-specific tooling:
+### 1. What did we actually link?
 
 ```bash
-readlink -f /path/to/libfoo.so.N
+otool -L ./myapp
+dyld_info -dependents ./myapp
 ```
 
-Example (zlib):
-```
-$ readlink -f /usr/lib/x86_64-linux-gnu/libz.so.1
-/usr/lib/x86_64-linux-gnu/libz.so.1.2.11
-```
-The real filename `libz.so.1.2.11` gives version `1.2.11` directly.
+OS copies live under `/System/Library/Frameworks/`,
+`/System/Library/PrivateFrameworks/`, or `/usr/lib/`. Bundled copies
+show as `@rpath/libopenblas.dylib`, `@executable_path/…`, Homebrew
+prefixes, etc.
 
-To find the `.so` path first:
+To see which slice ran:
+
 ```bash
-ldconfig -p | grep libfoo
-# or, given the binary that links it:
-ldd <binary> | grep libfoo
+otool -arch arm64 -L ./myapp
+sysctl sysctl.proc_translated   # 1 = Rosetta; refuse custom ISA
 ```
 
-**OpenSSL is a notable exception:** `libcrypto.so.3` resolves to a filename
-that still only shows the major version, so `readlink` is not useful there —
-use the OpenSSL-specific primitive below instead.
+### 2. OS / SDK floor
 
----
-
-### OpenSSL
-
-**Preferred:**
 ```bash
-openssl version
-```
-Example output:
-```
-OpenSSL 3.6.2 7 Apr 2026 (Library: OpenSSL 3.6.2 7 Apr 2026)
+sw_vers -productVersion
+xcrun --sdk macosx --show-sdk-version
 ```
 
-**Fallback** (replace path with the actual `.so` location from `ldd`):
+Accelerate / Compression / libSystem ship with the OS. There is no
+useful soname bump. Report **macOS version + SDK** next to the symbol.
+A gap is: bundled third-party lib on a machine whose OS already has
+the platform equivalent, or an SDK older than the APIs you want
+(BNNS graph, Apple Archive, …).
+
+### 3. Framework-specific
+
 ```bash
-strings /usr/lib/x86_64-linux-gnu/libcrypto.so.3 | grep "^OpenSSL 3"
-```
-Example output:
-```
-OpenSSL 3.6.2 7 Apr 2026
+# Accelerate is a framework, not a versioned .so
+ls /System/Library/Frameworks/Accelerate.framework
+nm -gU /System/Library/Frameworks/Accelerate.framework/Accelerate | grep vDSP_dotpr
+
+# Compression
+otool -L /usr/lib/libcompression.dylib
+
+# libSystem memcpy
+nm -gU /usr/lib/system/libsystem_platform.dylib | grep memcpy
 ```
 
-To find the actual `.so` path on the current system:
-```bash
-ldconfig -p | grep libcrypto
-# or, if you have the binary that links it:
-ldd <binary> | grep libcrypto
-```
+### Reporting
+
+State: hot symbol, dylib that actually ran, platform equivalent, OS/SDK,
+and the reason from the table. Do not invent a "minimum Accelerate 14.5"
+number — the OS *is* the version.

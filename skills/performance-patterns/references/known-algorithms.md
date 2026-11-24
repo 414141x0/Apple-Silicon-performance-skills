@@ -1,10 +1,14 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Known algorithms — function name index
 
-When you see any of the function names below, a fully-vectorized multi-width
-SIMD implementation is well-established. Inline the table in trigger files so
-detection is free; load `references/known-algorithms-impl.md` **only after a
-function name is confirmed present** in the code or profile being reviewed.
+When you see any of the function names below, a fully-vectorized
+ASIMD / DotProd / I8MM / SME implementation is well-established. Inline
+the table in trigger files so detection is free; load
+`references/known-algorithms-impl.md` **only after a function name is
+confirmed present** in the code or profile being reviewed.
 
 | Algorithm | Common function names in code |
 |-----------|-------------------------------|

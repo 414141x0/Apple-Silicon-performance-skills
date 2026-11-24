@@ -1,65 +1,68 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
-# Pattern: shared statistics counter → per-CPU statistics aggregation
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
+# Pattern: shared statistics counter → per-thread / per-group aggregation
 
 ## When to apply
 
 Apply when a single global counter (hits, errors, bytes, packets, total) is
 incremented atomically from many threads in a hot path. This is **true sharing**
-(all threads write the *same* field, not different fields) — distinguished from
-false sharing, where threads write different fields on the same line.
+(all threads write the *same* field) — distinguished from false sharing, where
+threads write different fields on the same 128 B line.
 
 ### Source code signals
 
-- `global_counter++` or `atomic_inc(&counter)` in a hot, frequently-called path
-- `atomic_fetch_add`, `__sync_fetch_and_add`, `_Atomic` increment in a tight loop
+- `global_counter++` or `atomic_fetch_add` in a hot, frequently-called path
 - Field name suggests accounting: `count`, `total`, `hits`, `misses`, `errors`,
-  `stat`, `bytes`, `packets`, or similar
-- No `cmpxchg` retry loop (if present, the TTAS pattern applies instead)
+  `stat`, `bytes`, `packets`
+- No CAS retry loop (if present, `patterns/ttas.md` applies instead)
 - The counter is updated from many call sites or a highly-parallelized loop
 
 ### Profiling signals
 
-- `lock add` / `lock inc` / `lock xadd` prominent in `perf annotate` on the hot
-  path
-- `perf c2c` shows **true sharing** on the counter's cache line: the same byte
-  offset is written by many different CPUs
-- The function appears as a scaling bottleneck in the multi-core profile (Flow D)
-  but is barely visible at 1 core — contention scales linearly with thread count
-- No `cmpxchg` instruction in the annotate output (differentiates from TTAS)
+- `LDADD` / `STADD` / `atomic_fetch_add` prominent in CPU Profiler on the
+  hot path
+- Dual-profile: the function is a scaling bottleneck at N threads, barely
+  visible at 1 — contention scales with thread count
+- Same byte offset written by many threads (true sharing)
+- No `CAS` retry loop (differentiates from TAS)
 
 ---
 
 ## Why frequent shared stats hurt under scaling
 
-Every atomic increment on a shared counter requires exclusive ownership of its
-cache line, so with N threads updating it, N-1 must wait for each exclusive
-transfer and the line bounces between LLC slices at near-memory latency
-(~100–300 ns) — worse as thread count grows. `memory_order_relaxed` doesn't
-help: the hardware still enforces exclusive ownership for any write regardless
-of software memory order.
+Every atomic increment needs exclusive ownership of its 128 B line. With N
+threads updating it, N−1 wait for each exclusive transfer; the line bounces
+through Shared LL and, across clusters, the fabric. `memory_order_relaxed`
+does not help: the hardware still enforces exclusive ownership for any write.
 
 ---
 
 ## Choosing between options
 
-Three options are available. Apply them in order of preference:
+Apply in order of preference:
 
 | Signal | Preferred option |
 |--------|-----------------|
 | Increment is **inside a loop local to one function** AND ≤ 2 hot profile sites | **Option A: Local batching** |
-| More than 2 hot profile sites, or increments scattered across call sites | **Option B: CPU-indexed bucket array** |
-| Code is a shared library that cannot own a global array, or counter is isolated | **Option C: `__thread` TLS (fallback)** |
+| More than 2 hot profile sites, or increments scattered across call sites | **Option B: thread-group / bucket array** |
+| Shared library that cannot own a global array, or an isolated counter | **Option C: TLS (fallback)** |
 
-When multiple counters are updated in the same loop, Options A and B are still
-the primary choices: Option A batches all of them cheaply with one flush per
-counter per batch; Option B calls `sched_getcpu()` once per increment site.
+Prefer sharding associated with **thread groups** (GCD queue, worker pool
+index, `pthread_t` slot). Core-index sharding is a last resort:
+`pthread_cpu_number_np` is a heuristic and the thread **may migrate**
+(Guide 7.5).
+
+When multiple counters update in the same loop, A and B still win: A flushes
+all of them in one block; B indexes the bucket once.
 
 ---
 
 ## Option A: Local batching
 
-Accumulate into a local (stack) variable inside the loop and flush to the global
-only at the batch boundary and unconditionally at function exit:
+Accumulate into a local (stack) variable and flush to the global at a batch
+boundary and at function exit:
 
 ```c
 #include <stdatomic.h>
@@ -80,102 +83,99 @@ void update_items(struct item *array, int n)
             local_counter = 0;
         }
     }
-    /* flush remainder */
     atomic_fetch_add_explicit(&global_counter, local_counter,
                               memory_order_relaxed);
 }
 ```
 
-**Removing the threshold check:** if the loop body is purely CPU-bound (no I/O,
-no blocking), remove the mid-loop threshold check entirely and flush once at the
-end. This eliminates all mid-loop atomics.
-
-**Multiple counters:** give each counter its own local variable and flush all of
-them in the same conditional block — no extra `sched_getcpu()` overhead.
+If the loop is purely CPU-bound (no I/O, no blocking), drop the mid-loop
+threshold and flush once at the end.
 
 Use `memory_order_relaxed` for the flush — no ordering dependency exists.
+C11 `atomic_fetch_add` compiles to LSE `LDADD` on Apple silicon.
 
 ---
 
-## Option B: CPU-indexed bucket array
+## Option B: thread-group / bucket array
 
-A fixed-size array of cache-line-padded structs, indexed by the current CPU
-number. Robust, zero-overhead on the read side (just sum across buckets), no
-flush-interval decisions needed.
+A fixed-size array of 128 B-padded structs, indexed by worker slot or (as a
+heuristic) CPU number. Zero-overhead on the read side (sum the buckets).
 
-**Group all statistics fields into one struct** — this amortizes the padding
-overhead and means `sched_getcpu()` is called once, not once per counter.
+**Group all statistics fields into one struct** so padding is paid once.
 
-### Step 1 — Define the per-CPU struct (in a shared header)
+### Step 1 — Define the per-bucket struct
 
 ```c
 #include <stdint.h>
 #include <assert.h>
 
 struct statistics {
-    /* All counters here. Keep total size ≤ 56 bytes for one cache line. */
     uint64_t read_counter;
     uint64_t insert_counter;
     uint64_t error_counter;
     uint64_t byte_counter;
-    uint64_t _padding[4];    /* adjust so sizeof == 64 */
+    uint64_t _padding[12];    /* 4*8 + 12*8 = 128 */
 };
 
-_Static_assert(sizeof(struct statistics) % 64 == 0,
-               "struct statistics must be a multiple of the cache line size (64 bytes)");
+_Static_assert(sizeof(struct statistics) % 128 == 0,
+               "struct statistics must be a multiple of 128");
 
-/* COUNT must be a power of 2; 64 is a good default */
 #define STATISTICS_COUNT  64
 #define STATISTICS_MASK   (STATISTICS_COUNT - 1)
 
 extern struct statistics statistics[STATISTICS_COUNT]
-    __attribute__((aligned(64)));    /* declaration in header */
+    __attribute__((aligned(128)));
 ```
 
-The `& STATISTICS_MASK` on the CPU index is a cheap modulo: if the live CPU count
-exceeds `STATISTICS_COUNT`, some sharing occurs but the contention factor drops
-from N threads sharing 1 line to at most N/STATISTICS_COUNT threads sharing 1 line.
-
-**Sizing guidance:**
+`& STATISTICS_MASK` is a cheap modulo. If live workers exceed
+`STATISTICS_COUNT`, some sharing remains, but contention drops from N
+threads on 1 line to at most N/`STATISTICS_COUNT`.
 
 | Situation | Recommended STATISTICS_COUNT |
 |-----------|------------------------------|
 | General use / unsure | 64 |
 | Low thread count or infrequent updates | 16 or 32 |
-| Contention still visible after 32 | Increase to 64 |
-| Read cost too high (frequent reads of many buckets) | Decrease by one tier |
+| Contention still visible after 32 | 64 |
+| Read cost too high | Decrease by one tier |
 
-### Step 2 — Define the array and increment helpers (in one `.c` file)
+### Step 2 — Increment helpers
+
+Prefer a worker index you own (GCD `dispatch_apply` index, thread-pool slot).
+`pthread_cpu_number_np` is acceptable as a heuristic only.
 
 ```c
-#include <sched.h>       /* sched_getcpu() */
+#include <pthread.h>
 #include <stdatomic.h>
 #include "statistics.h"
 
-struct statistics statistics[STATISTICS_COUNT] __attribute__((aligned(64)));
+struct statistics statistics[STATISTICS_COUNT] __attribute__((aligned(128)));
+
+static inline unsigned bucket_index(void)
+{
+    size_t cpu = 0;
+    /* Heuristic: the thread may migrate. Prefer a stable worker id if you have one. */
+    if (pthread_cpu_number_np(&cpu) != 0)
+        cpu = 0;
+    return (unsigned)cpu & STATISTICS_MASK;
+}
 
 static inline void inc_read_counter(void)
 {
     atomic_fetch_add_explicit(
-        &statistics[sched_getcpu() & STATISTICS_MASK].read_counter,
+        &statistics[bucket_index()].read_counter,
         1, memory_order_relaxed);
 }
-/* repeat for each counter */
 ```
 
-**Atomic API priority** — adapt to the existing codebase style:
+**Atomic API priority**
 
 | Priority | API | When to use |
 |----------|-----|-------------|
-| 1st | `<stdatomic.h>` — `atomic_fetch_add_explicit(..., memory_order_relaxed)` | C11 or later |
-| 2nd | `<atomic>` — `std::atomic<uint64_t>::fetch_add(1, std::memory_order_relaxed)` | C++11 or later |
-| 3rd | GCC `__atomic_add_fetch(&x, 1, __ATOMIC_RELAXED)` | GCC, pre-C11 |
-| 4th | GCC `__sync_fetch_and_add(&x, 1)` | Legacy GCC — implies full barrier, slower |
+| 1st | `<stdatomic.h>` `atomic_fetch_add_explicit(..., memory_order_relaxed)` | C11 |
+| 2nd | `<atomic>` `fetch_add(1, std::memory_order_relaxed)` | C++11 |
+| 3rd | `__atomic_add_fetch(&x, 1, __ATOMIC_RELAXED)` | pre-C11 Clang |
 
-Use `memory_order_relaxed` for counter increments — no ordering dependency exists,
-and a relaxed atomic is still atomically correct.
-
-### Step 3 — Define the aggregation helpers
+### Step 3 — Aggregation
 
 ```c
 uint64_t get_read_counter(void)
@@ -186,39 +186,23 @@ uint64_t get_read_counter(void)
             &statistics[i].read_counter, memory_order_relaxed);
     return sum;
 }
-/* repeat for each counter */
 ```
 
-Using `atomic_load` (a plain load on x86) keeps the code consistent and avoids
-torn reads on `uint64_t`. For display-only statistics the value is inherently
-approximate at any point in time.
+Display-only statistics are inherently approximate.
 
-### Step 4 — If per-CPU stats already exist but contention persists
+### Step 4 — Existing per-CPU stats still contend
 
-If the code already has per-CPU or per-thread statistics but contention persists,
-the flush interval may be too short — flushing is happening inside the hot path:
-
-```c
-/* Over-eager flush — called on every request */
-void handle_request(...) {
-    do_work();
-    flush_stats();   /* ◄ moves data to global too frequently */
-}
-```
-
-Increase the flush interval (batch N requests, use a timer, or flush only at
-thread exit) and re-verify with `perf c2c`.
+If buckets already exist but contention persists, the flush is inside the
+hot path. Increase the interval (batch N requests, timer, or thread exit)
+and re-check the dual-profile.
 
 ---
 
-## Option C (fallback): `__thread` TLS
-
-If the bucket-array approach is impractical (e.g., a shared library that cannot
-own a global array, or an isolated counter not worth a full struct):
+## Option C (fallback): TLS
 
 ```c
-static __thread uint64_t local_hit_count;
-static _Atomic uint64_t  global_hit_count;
+static _Thread_local uint64_t local_hit_count;
+static _Atomic uint64_t       global_hit_count;
 
 static inline void inc_hit_count(void) { local_hit_count++; }
 
@@ -230,34 +214,25 @@ static void flush_hit_count(void) {
 /* Call flush_hit_count() at thread exit or periodically */
 ```
 
-Caveats: `__thread` / `thread_local` can have non-trivial initialization overhead
-in shared libraries (`.so`), and the flush decision adds complexity. Prefer the
-bucket-array approach when possible.
+TLS init in dylibs is not free. Prefer the bucket array when you can own it.
 
 ---
 
 ## Verification
 
-1. **Correctness** — the total counter value is now approximate (threads may not
-   have flushed yet); confirm this is acceptable for the use case (usually yes
-   for statistics/monitoring).
-2. **Profiling** — rerun `perf annotate` and confirm `lock add`/`lock xadd`
-   disappears or drops sharply from the hot path.
-3. **c2c** — rerun `perf c2c` and confirm HITM drops on the counter's cache line.
-4. **Scaling** — measure throughput at N threads; the linear regression should be
-   gone.
+1. **Correctness** — totals are now approximate until flush; confirm that is
+   acceptable (usually yes for stats).
+2. **Profiling** — `LDADD`/`STADD` disappears or drops from the hot path.
+3. **Dual-profile** — the linear scaling jumper is gone.
+4. **Layout** — `_Static_assert` multiple of 128.
 
 ---
 
 ## Presenting this to the user
 
-1. Show the shared counter declaration and the hot accessor with `/* ◄ contention */`.
-2. Explain cache-line bouncing in plain terms — every increment forces all other
-   threads to reload the line before they can increment it.
-3. Apply the decision table to choose Option A, B, or C. Briefly explain the
-   choice (one sentence is enough).
-4. For Option A: show the local variable, the threshold flush, and the exit flush.
-5. For Option B: show the struct definition with padding, the array definition,
-   and one increment + one read helper. Let the agent adapt field names and API
-   to the local codebase style.
-6. Recommend re-running `perf c2c` after the change to confirm HITM drops.
+1. Show the shared counter and the hot accessor with `/* contention */`.
+2. Explain 128 B exclusive bounce in one paragraph.
+3. Pick A, B, or C in one sentence (thread-group over core index).
+4. For B: show the 128 B struct, `_Static_assert`, and one increment helper.
+   Note that `pthread_cpu_number_np` may migrate.
+5. Recommend a dual-profile after the change, not a coherence sampler.

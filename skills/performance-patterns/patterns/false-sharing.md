@@ -1,4 +1,7 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Pattern: false sharing → structured false-sharing fix
 
 ## When to apply
@@ -6,37 +9,43 @@
 Apply when a cache line is heavily written by multiple threads, but each thread
 accesses **different fields** at different byte offsets within that line. The
 fields are logically independent — no thread needs the data another thread writes
-— but the cache-coherence protocol treats the entire line as the unit of ownership,
-causing spurious invalidations.
+— but the cache-coherence protocol treats the entire **128-byte** line as the
+unit of ownership, causing spurious invalidations.
+
+The dual of this pattern is packing hot fields onto the **fewest** lines
+(Guide rec 38). Step 3 below is that dual: after padding proves the diagnosis,
+group by access so same-thread hot fields share a line.
 
 ### Source code signals
 
 - A struct with multiple fields, where different fields are written by different
-  threads (e.g., per-thread counters, state flags, or work items packed into a
-  shared struct)
-- No `alignas(64)` or `__attribute__((aligned(64)))` between thread-private fields
-- Fields written at high frequency in a tight per-thread loop share a struct with
-  other frequently-written fields
+  threads (per-thread counters, state flags, work items packed into a shared
+  struct)
+- No `alignas(128)` or `__attribute__((aligned(128)))` between thread-private
+  fields
+- Fields written at high frequency in a tight per-thread loop share a struct
+  with other frequently-written fields
 
 ### Profiling signals
 
-- `perf c2c` reports **HITM > 5%** on a cache line (Tot Hitm column)
-- The per-line access map shows **different offsets** being written by different
-  CPU/thread IDs — key distinction from true sharing
-- The hotspot function appears prominently only in the multi-core profile (Flow D),
-  not at 1 core — the regression scales linearly with thread count
-- `perf c2c` `lcl hitm` (local HITM, same socket) is the dominant component rather
-  than `rmt hitm` (cross-socket)
+- There is **no HITM / c2c sampler**. Diagnose with:
+  1. Dual-profile jumper: the function is hot at N threads, invisible at 1.
+  2. Layout: different byte offsets of the same 128 B line written by
+     different threads (Instruments Points of Interest, or inspect the struct).
+  3. Elevated `ATOMIC_OR_EXCLUSIVE_FAIL` when the fields are atomic.
+- Regression scales with thread count.
+- Cross-cluster modified sharing is worse (~10× intra-cluster Shared LL
+  via the fabric). Keep independent writers inside one cluster when possible.
 
 ---
 
 ## Why false sharing hurts under scaling
 
-A cache line (typically 64 bytes) is the smallest unit of coherence, so a write
-to unrelated field X by thread A and field Y by thread B still invalidates the
-whole line for the other thread, forcing a full reload from L3/memory. This
-traffic scales linearly with thread count, which is why it only shows up as
-prominent in a multi-core profile.
+A cache line is **128 bytes** (`hw.cachelinesize` — query it, do not hardcode
+in portable code). A write to unrelated field X by thread A and field Y by
+thread B still invalidates the whole line for the other thread, forcing a
+reload from Shared LL or the fabric. Traffic scales with thread count, which
+is why it only shows up as prominent in a multi-core profile.
 
 ---
 
@@ -44,96 +53,102 @@ prominent in a multi-core profile.
 
 ### Step 1 — Generous padding (proof of concept)
 
-Add `alignas(64)` to the struct and insert explicit `char _pad[N]` fields between
-the contested fields to push them to separate cache lines. Use *more padding than
-you think you need* at this stage — proving the diagnosis is more important than
-minimizing size:
+Add `alignas(128)` to the struct and insert explicit `char _pad[N]` fields
+between the contested fields. Use *more padding than you think you need* at
+this stage — proving the diagnosis is more important than minimizing size:
 
 ```c
 struct example {
     int written_by_thread_a;        /* thread A's field */
-    char _pad0[60];                 /* push to next cache line */
+    char _pad0[124];                /* 4 + 124 = 128 */
     int written_by_thread_b;        /* thread B's field */
-    char _pad1[60];
+    char _pad1[124];
     int read_a_lot;                 /* shared read-mostly field */
-} __attribute__((aligned(64)));
+} __attribute__((aligned(128)));
 ```
 
 ### Step 2 — Verify the fix
 
-Rebuild and rerun the workload with the same `perf c2c` collection. Confirm that:
-- The HITM percentage for this cache line drops sharply (target: below 1%)
-- Overall workload throughput improves noticeably at the same thread count
+Rebuild and rerun the same dual-profile. Confirm that:
 
-If HITM does not drop, the diagnosis was wrong — the sharing may be true sharing,
-or additional fields are involved. Re-examine the `perf c2c` per-offset access map
-before proceeding.
+- The jumper function drops out of the N-thread profile (or
+  `ATOMIC_OR_EXCLUSIVE_FAIL` on that line collapses)
+- Throughput at the same thread count improves
 
-### Step 3 — Optimize struct layout
+If it does not drop, the diagnosis was wrong — the sharing may be true
+sharing, or additional fields are involved. Re-inspect offsets before
+proceeding. Do not skip to Step 3 without this confirmation.
 
-Once the fix is confirmed, minimize the added size by grouping struct members by
-access pattern rather than inserting padding bluntly:
+### Step 3 — Optimize struct layout (pack hot fields)
+
+Once the fix is confirmed, minimize size by grouping members by **access
+pattern**. This is Guide rec 38 — pack hot variables onto the fewest cache
+lines — the dual of the padding in Step 1:
 
 | Group | What to put here |
 |-------|-----------------|
-| **Write-often (thread A)** | Fields written frequently from thread A only |
-| **Write-often (thread B)** | Fields written frequently from thread B only |
-| **Read-mostly** | Fields read by many threads but rarely written (config, thresholds, lookup tables) |
-| **Rarely touched** | Initialization-time or infrequently accessed fields |
+| **Write-often (thread A)** | Fields written frequently from thread A only — **one 128 B line** |
+| **Write-often (thread B)** | Fields written frequently from thread B only — **next 128 B line** |
+| **Read-mostly** | Fields read by many threads but rarely written (config, thresholds) — may share a line |
+| **Rarely touched** | Initialization-time fields; fill remaining space |
 
-Each **write-often** group for a different thread must occupy its own cache line.
-**Read-mostly** fields from all threads can safely share a cache line — shared
-reads do not cause HITM. **Rarely-touched** fields can fill remaining space.
+Each **write-often** group for a different thread must occupy its own 128 B
+line. **Read-mostly** fields from all threads can share a line — shared reads
+do not bounce ownership. **Rarely-touched** fields fill the rest.
 
 ```c
-/* After optimization */
 struct example {
-    /* Thread A's write-often fields — one cache line */
+    /* Thread A's write-often fields — one 128 B line */
     int written_by_thread_a;
     uint64_t thread_a_counter;
-    char _pad0[52];             /* fill to 64 bytes */
+    char _pad0[116];            /* 4 + 8 + 116 = 128 */
 
-    /* Thread B's write-often fields — next cache line */
+    /* Thread B's write-often fields — next 128 B line */
     int written_by_thread_b;
     uint64_t thread_b_counter;
-    char _pad1[52];             /* fill to 64 bytes */
+    char _pad1[116];
 
     /* Read-mostly shared fields — can share a line */
     int config_threshold;
     int config_limit;
-} __attribute__((aligned(64)));
+} __attribute__((aligned(128)));
+
+_Static_assert(sizeof(struct example) % 128 == 0,
+               "struct example must be a multiple of 128");
 ```
 
-After each layout change, re-verify with `perf c2c` that HITM stays suppressed.
-Stop when the padding is minimal and HITM is still below 1%.
+After each layout change, re-verify with a dual-profile. Stop when padding
+is minimal and the jumper is still gone.
 
 ### Alternative: per-thread structs
 
-If the false sharing stems from a struct that was designed as a global-but-sharded
-object, consider moving thread-private fields into a true per-thread struct
-(allocated separately per thread or indexed by thread ID) and removing them from
-the shared struct entirely. This eliminates the problem structurally rather than
-papering over it with padding.
+If the false sharing stems from a global-but-sharded object, move
+thread-private fields into a true per-thread struct (allocated separately
+or TLS) and remove them from the shared struct. That eliminates the problem
+structurally.
 
 ---
 
 ## Verification
 
-1. **Step 2 above is the primary verification** — `perf c2c` before and after.
-2. **Benchmark** — measure throughput at N threads; the regression should be gone.
-3. **Size check** — `sizeof(struct example)` should be what you expect after
-   the Step 3 optimization; use `_Static_assert` to guard it.
+1. **Step 2 is the primary verification** — dual-profile + layout, not a
+   coherence sampler.
+2. **Benchmark** — throughput at N threads; the regression should be gone.
+3. **Size check** — `sizeof` is a multiple of 128; `_Static_assert` it.
+4. **Cross-cluster** — if the machine has multiple clusters
+   (`hw.nperflevels`, `hw.perflevel{N}.physicalcpu`), prefer not to have
+   modified sharing of the same line across the fabric.
 
 ---
 
 ## Presenting this to the user
 
-1. Show the struct definition annotated with byte offsets (`/* +0x00 */`,
-   `/* +0x04 */`, etc.) so the conflict is visually obvious.
-2. Show the fields involved from the `perf c2c` Offset column and explain why
-   they conflict even though the data is unrelated.
+1. Show the struct with byte offsets (`/* +0x00 */`, `/* +0x04 */`) so the
+   128 B conflict is obvious.
+2. Explain that the line is 128 B, not 64 B, and that independent fields
+   still bounce as one unit.
 3. Apply Step 1 (generous padding) and show the modified struct.
-4. Ask the user to rebuild and rerun — **do not skip to Step 3 without Step 2
-   confirmation**; the padding may be wrong.
-5. After the user confirms HITM dropped, propose the optimized layout and show
-   the new struct with grouping comments.
+4. Ask the user to rebuild and rerun the dual-profile — **do not skip to
+   Step 3 without Step 2**.
+5. After confirmation, propose the packed layout (hot fields on the fewest
+   lines) and show the new struct with grouping comments.

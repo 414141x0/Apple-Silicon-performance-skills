@@ -7,6 +7,16 @@ gccbranchprob.py — report GCC static branch-probability estimates.
 Parses a GCC profile_estimate dump file and reports per-branch probability
 estimates as a Markdown table on stdout for direct agent ingestion.
 
+This parser is ISA-agnostic: GCC's profile_estimate dump is architecture-
+neutral, so the same tool works on x86 and AArch64. Do not rewrite it.
+
+On Darwin / Apple Silicon the native companion is Clang PGO
+(`-fprofile-instr-generate` / `llvm-profdata show` / `llvm-cov export`),
+consumed by tools/branchprob.py. Prefer that when a representative run is
+available; use this tool when the project already emits GCC
+profile_estimate dumps or when you need a static estimate without
+executing the binary.
+
 Usage:
     python3 gccbranchprob.py <source.c> <dump_dir> [function ...] [options]
 
@@ -21,8 +31,8 @@ Arguments:
 Options:
     --fuzzy         Match function names as substrings rather than exact names
 
-The output format uses the same columns as branchprob.py (the perf-based
-tool) where applicable, so the two outputs can be compared side-by-side.
+The output format uses the same columns as branchprob.py where applicable,
+so the two outputs can be compared side-by-side.
 The key difference: 'GCC Est%' is a static compiler estimate; 'Taken%' from
 branchprob.py is a measured runtime probability.  Significant divergence
 between the two is a signal worth investigating.

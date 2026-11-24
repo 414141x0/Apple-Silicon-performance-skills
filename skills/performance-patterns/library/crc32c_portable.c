@@ -1,14 +1,22 @@
-/* (C) 2026 Intel Corporation, MIT license */
+/* Structure derived from Intel Performance Skills (MIT, 2026).
+ * ISA-neutral CRC32C table implementation. MIT license.
+ */
 /*
- * CRC32C (Castagnoli) - portable C implementation, no special CPU features.
+ * CRC32C (Castagnoli) — portable C implementation, no special CPU features.
  *
  * Uses a 256-entry lookup table and processes one byte at a time.
  * Works on any architecture, any compiler, any C standard >= C99.
  *
- * Typical speed: ~1-3 GB/s.  If you need more on non-AVX512 hardware,
- * use crc32c_sse42.c instead (requires SSE4.2, ~15-25 GB/s).
+ * Typical speed: ~1–3 GB/s. This is the ISA-neutral fallback after the
+ * ARM CRC32 + PMULL path (library/crc32c_arm64.c) is unavailable
+ * (Rosetta, or a build without CRC32).
+ *
+ * Polynomial: Castagnoli 0x1EDC6F41 (reflected 0x82F63B78) — same as
+ * crc32c_arm64.c.
  *
  * Entry point: crc32c_portable_impl(uint32_t crc, const char *buf, size_t len)
+ *
+ * Self-test: crc32c(0, "", 0) == 0; crc32c(0, "123456789", 9) == 0xE3069283.
  */
 
 #include <stddef.h>

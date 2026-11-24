@@ -1,10 +1,14 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Pattern triggers: profiling output
 
-Use this file when you have profiling data — `perf annotate`, `perf c2c`,
-`perf stat`, `perf report`, VTune, flamegraphs, or any sampled CPU profile.
-Find the matching pattern below, then read the linked file in `patterns/` for
-the full diagnosis and fix.
+Use this file when you have profiling data — Instruments **CPU Profiler**,
+**CPU Counters**, **CPU Bottlenecks** (Instruments 26+), `xctrace export`,
+or a sampled cycle profile. Time Profiler is wall-clock; do not use it for
+ISA work. Find the matching pattern below, then read the linked file in
+`patterns/` for the full diagnosis and fix.
 
 ---
 
@@ -12,60 +16,49 @@ the full diagnosis and fix.
 
 | Signal in profile | Pattern | Detail file |
 |-------------------|---------|-------------|
-| Accumulate instruction (`vaddss`, `vaddpd`, `vfmadd*`) dominates annotate; IPC ≪ 1; cache misses low | Serial accumulator | `patterns/parallel-accumulator.md` |
-| `other_assists.avx_to_sse` > 0 in `perf stat`; or first SSE instruction after AVX function carries extreme cycle count in annotate | Missing vzeroupper | `patterns/missing-vzeroupper.md` |
-| Scalar preamble (pointer subtraction + conditional branch) before an otherwise vectorizable loop; or two loop versions (one vectorized, one scalar) in annotate for a simple array function | Missing restrict | `patterns/missing-restrict.md` |
-| Scalar FP (`addsd`, `mulss`, `movsd`) or `xmm` registers in hot loop on AVX2/AVX-512 CPU | Narrow SIMD | `patterns/simd-upconversion.md` |
-| `lock cmpxchg` cluster with high density in annotate; throughput drops with more threads | Test-and-Set spinlock | `patterns/ttas.md` |
-| `perf c2c` HITM > 5% on a line; different byte offsets written by different threads | False sharing | `patterns/false-sharing.md` |
-| `lock add` / `lock xadd` / `lock inc` in hot path; `perf c2c` true sharing on a stats/counter field | Shared statistics counter | `patterns/per-cpu-stats.md` |
-| Hot symbol's DSO column shows a `.so` file (not the application binary); symbol appears in `references/library-versions.md` | Library version upgrade | `patterns/library-version-upgrade.md` |
-| `crc32b`/`crc32q`/`pclmulqdq` instructions dominate a hot function; or a function named `crc32c`/`crc32_c`/`compute_crc32c` is prominent; single-accumulator CRC32 loop | Fast CRC32C | `patterns/fast-crc32c.md` |
-| `futex_wake`, `try_to_wake_up`, `__pthread_cond_broadcast` hot; context-switch rate scales with thread count; IPC collapse with high CPU utilization | CV thundering herd | `patterns/cv-thundering-herd.md` |
-| `osq_lock`, `mutex_lock`, `__mutex_lock_slowpath` (kernel) or `pthread_mutex_lock`, `__lll_lock_wait`, `futex_wait`/`futex_wake` (user-space) prominent; critical section is read-heavy (lookup/search); IPC drops with core count | Mutex to rwlock | `patterns/mutex-to-rwlock.md` |
-| Hot function name matches a known algorithm (`hamming_distance`, `hamming_dist`, `cosine_similarity`, `jaccard_distance`, …) | Known algorithm — optimized SIMD replacement available | `references/known-algorithms-impl.md` |
-| `std::sort`, `_introsort_loop`, `__gnu_cxx::__ops` hot in profile; data type is `float`, `double`, `int32_t`, `uint32_t`, `int64_t`, or `uint64_t` | SIMD sort | `patterns/simd-sort.md` |
+| `FADDS` / `FADDD` / scalar `FMLA` / `FMADD` dominates; Useful high or Processing bottleneck; low L1D miss | Serial accumulator | `patterns/parallel-accumulator.md` |
+| Scalar FP (`FADD`/`FMUL` without `.4S`/`.2D`) in a hot loop; or ASIMD when a large GEMM belongs on the SME grid | Narrow SIMD | `patterns/simd-upconversion.md` |
+| Alias-check preamble in Clang asm (pointer sub + `B.cond` to a scalar clone) before an otherwise vectorizable loop | Missing restrict | `patterns/missing-restrict.md` |
+| `CAS` / `LDXR`+`STXR` cluster with no plain load first; or a tight load-of-flag spin | Test-and-Set / spin | `patterns/ttas.md`, `patterns/spin-wait.md` |
+| Dual-profile jumper + different offsets on the same 128 B line + `ATOMIC_OR_EXCLUSIVE_FAIL` | False sharing | `patterns/false-sharing.md` |
+| `LDADD` / `STADD` on one counter; same offset, many threads | Shared statistics counter | `patterns/per-cpu-stats.md` |
+| Hot symbol in a system dylib (`Accelerate`, `libSystem`, `Compression`) with a known better path | Library version upgrade | `patterns/library-version-upgrade.md` |
+| Homemade NEON/dot/FFT/memcpy while Accelerate / libSystem is absent from `otool -L` | Platform libraries first | `patterns/platform-libs-first.md` |
+| `CRC32B` / `CRC32CX` / `CRC32CW` single accumulator dominating a checksum | Fast CRC32C | `patterns/fast-crc32c.md` |
+| `psynch_cvbroad` / `kevent` storm; GCD wake scaling with waiter count | CV thundering herd | `patterns/cv-thundering-herd.md` |
+| `pthread_mutex_*` / `psynch_mutexwait` / `os_unfair_lock` on a read-mostly lookup | Mutex to rwlock | `patterns/mutex-to-rwlock.md` |
+| `std::sort` / introsort hot on `float`/`double`/`int32`/`int64` arrays | SIMD sort | `patterns/simd-sort.md` |
+| Hot name matches cosine / Hamming / Jaccard | Known algorithm | `references/known-algorithms-impl.md` |
+| `FMOV`/`UMOV`/`INS`/`DUP` (general) dense in a hot loop | GPR ↔ vector moves | `patterns/gpr-vector-moves.md` |
+| Delivery-bandwidth bottleneck; `B.cond` density near 1 taken per 8 insns | Taken branch / CSEL | `patterns/taken-branch-and-csel.md` |
+| `FMUL`+`FADD` pair where `FMLA`/`vfmaq` would fuse | Fused MAC | `patterns/fused-mac.md` |
+| OpenMP static / equal chunks; E-core stragglers in a dual-profile | AMP work partition | `patterns/amp-work-partition.md` |
+| `WFE` / `YIELD` loop or tight load of a flag occupying S/P cores | Spin-wait | `patterns/spin-wait.md` |
+| `SMSTART` plus core waiting; dependent `FMOV` after `SMSTOP` each tile | SME engine bounce | `patterns/sme-engine-bounce.md` |
+| Publication of a pointer/flag without `DMB` / `STLR` / release | Weak memory | `patterns/weakly-ordered-memory.md` |
+| Constants: 64 B line, 4 KiB page, 8 cores, "no SME" compiled in | sysctl hardcoding | `patterns/sysctl-hardcoding.md` |
+| Many small stores forwarding into one wide load; STLF fails | Store forwarding | `patterns/store-forwarding.md` |
+| Unaligned `ST1` of wide vectors in a streaming store loop | Unaligned access | `patterns/unaligned-access.md` |
+| `PRFM` in a sequential scan the HW prefetcher already covers | Software prefetch | `patterns/software-prefetch.md` |
+| `sys_icache_invalidate` / `ic ivau` storm from a JIT | JIT I-cache | `patterns/jit-icache.md` |
+| Hot function calls error reporters; I-cache pollution | Cold-path annotation | `patterns/cold-path-annotation.md` |
+| Hangs track / MetricKit hang rate; `0x8badf00d`; main-thread `recv`/`fsync` | Main-thread blocking | `patterns/main-thread-blocking.md` |
+| Hitch rate >10 ms/s; SwiftUI long body >500 µs | SwiftUI update cost / main-thread | `patterns/swiftui-update-cost.md`, `patterns/main-thread-blocking.md` |
+| Allocations dirty growth; jetsam `rpages`; File Activity write storm | Dirty pages / disk writes | `patterns/disk-and-dirty-memory.md` |
 
 ---
 
 ## Pattern descriptions
 
-### Missing restrict
-
-`perf annotate` shows a scalar **aliasing preamble** before the main loop: a
-pointer subtraction, comparison, and conditional branch to a scalar fallback,
-even though the loop body is a simple array operation. Two versions of the same
-loop may appear — one vectorized, one scalar — where the scalar path exists only
-to handle the (never-occurring in practice) aliased case. The hot loop may also
-be fully scalar if the compiler abandoned vectorization rather than emitting the
-versioned form.
-
-Read `patterns/missing-restrict.md`.
-
----
-
-### Missing vzeroupper
-
-Run `perf stat -e other_assists.avx_to_sse,other_assists.sse_to_avx ./program`.
-A non-zero `other_assists.avx_to_sse` count confirms the penalty. In
-`perf annotate`, the symptom is an extreme cycle count on the **first SSE
-instruction** following a function that uses `ymm` or `zmm0`–`zmm15` registers —
-the hardware is paying a transition penalty there. The fix is a single
-`vzeroupper` instruction (or `_mm256_zeroupper()` intrinsic) before any exit
-point that returns to SSE code.
-
-Read `patterns/missing-vzeroupper.md`.
-
----
-
 ### Serial accumulator
 
-The accumulate instruction (e.g., `vaddss`, `vaddpd`, `vmulss`, `vfmadd213ps`)
-appears at the top of the `perf annotate` cycle-count column for a tight loop.
-IPC from `perf stat` is well below 1.0 with low cache-miss rates — a dependency
-stall, not a memory stall. Cycles-per-iteration is at or above the FP latency
-of the operation (typically 4–5 cycles for `vadd`/`vfma`), even though the loop
-body is short.
+CPU Profiler / `llvm-objdump -d` shows scalar `FADDS`, `FADDD`, `FMULS`, or
+scalar `FMLA`/`FMADD` at the top of a tight loop. CPU Bottlenecks reports
+**Processing** (dependency) or high **Useful** with low L1D miss — not a
+memory stall. Cycles per iteration sit at FP latency (look up Appendix A;
+~4 cycles is the FMLA rule of thumb) even though the body is short. Four
+independent accumulators, then ASIMD `vfmaq_f32`, then SME ZA for large
+GEMM/dot.
 
 Read `patterns/parallel-accumulator.md`.
 
@@ -73,26 +66,38 @@ Read `patterns/parallel-accumulator.md`.
 
 ### Narrow SIMD
 
-`perf annotate` shows scalar floating-point instructions (`addsd`, `mulss`,
-`movsd`, `vaddss`, `vmulss`) or 128-bit packed operations (`xmm` register names)
-in the hot loop body, on a CPU that supports AVX2 (`ymm`) or AVX-512 (`zmm`).
-The CPU can process 4–8× more data per instruction than it currently does. Also
-applies when `perf stat` shows low IPC on a workload that is clearly CPU-bound
-(low cache misses) — auto-vectorization may have produced narrow or scalar code.
+The hot loop is scalar FP or ASIMD without `.4S`/`.2D` packing, on a core
+that has 32 V registers. Or the loop *is* ASIMD 128 but the algorithm is a
+large GEMM / outer-product / tiled matvec that belongs on the SME Processing
+Grid (M4+). There is no 256-bit ASIMD; "wider" means more independent 128-bit
+vectors or ZA, not a Y-register. Bandwidth-bound loops (Critical L1D miss
+while executing) do not need a wider issue.
 
 Read `patterns/simd-upconversion.md`.
 
 ---
 
-### Test-and-Set spinlock
+### Missing restrict
 
-`perf annotate` shows a tight cluster of `lock cmpxchg` (or `lock xchg`,
-`lock cmpxchg8b`) instructions with high sample density, with no ordinary load
-of the lock variable preceding the atomic. `perf report` shows `spin_lock`,
-`cmpxchg`, `try_lock`, or CAS wrapper functions prominently. The defining
-scaling signal: throughput **declines** (not just plateaus) as thread count
-increases, or a dual-profile comparison shows these functions jumping from
-invisible at 1 core to dominant at N cores.
+Clang `-O3` assembly shows a scalar **aliasing preamble** — pointer
+subtraction, compare, `B.cond` to a scalar clone — in front of a simple
+array loop. Two versions of the same loop may appear; the scalar path exists
+only for the overlapping-pointer case. Confirm with
+`clang -O3 -Rpass=loop-vectorize`. C only (`restrict`); C++ uses
+`__restrict__`.
+
+Read `patterns/missing-restrict.md`.
+
+---
+
+### Test-and-Set spinlock / spin-wait
+
+CPU Profiler shows a tight `CAS` or `LDXR`/`STXR` cluster with no ordinary
+load of the lock first, or a load-of-flag / `WFE` / `YIELD` loop. Throughput
+drops as threads increase. Guide 7.3: **block, do not spin**, except waits
+on the order of a thread switch. Prefer GCD, `os_unfair_lock`, pthreads,
+C11; prefer LSE `LDADD`/`CAS` over exclusive pairs. TTAS is the rare
+short-wait form; see also `patterns/spin-wait.md`.
 
 Read `patterns/ttas.md`.
 
@@ -100,12 +105,12 @@ Read `patterns/ttas.md`.
 
 ### False sharing
 
-`perf c2c` reports HITM (Hit Modified) events above 5% on a cache line (`Tot
-Hitm` column). The per-line access map shows **different byte offsets** being
-written by different CPU or thread IDs — the key sign that threads are not
-actually sharing data, just sharing a cache line. The hotspot function appears
-in the multi-core profile but not (or barely) at 1 core, and the regression
-scales linearly with thread count.
+There is no HITM sampler. Diagnose with a dual-profile jumper (hot at N
+threads, invisible at 1), **different byte offsets** of the same 128 B line
+written by different threads, and elevated `ATOMIC_OR_EXCLUSIVE_FAIL` when
+atomics are involved. Pad to `alignas(128)`. Then pack same-thread hot
+fields onto the fewest lines. Cross-cluster modified sharing is ~10×
+intra-cluster Shared LL — keep writers inside one cluster when possible.
 
 Read `patterns/false-sharing.md`.
 
@@ -113,24 +118,46 @@ Read `patterns/false-sharing.md`.
 
 ### Shared statistics counter
 
-`perf annotate` shows `lock add`, `lock xadd`, or `lock inc` in the hot path,
-with no `cmpxchg` retry loop (which would indicate the TTAS pattern instead).
-`perf c2c` shows true sharing on a counter or statistics field — the **same
-byte offset** written by many CPUs. The function barely appears at 1 core but
-grows linearly with thread count in the scaling profile, and field names suggest
-accounting (`count`, `total`, `hits`, `misses`, `bytes`, `errors`, `stat`).
+`LDADD` / `STADD` / `atomic_fetch_add` on **one** counter in the hot path,
+same offset, many threads — true sharing, not false sharing. Dual-profile
+shows linear growth with thread count. Batch locally, or shard into 128 B
+buckets (thread-group first; `pthread_cpu_number_np` is a heuristic that
+may migrate).
 
 Read `patterns/per-cpu-stats.md`.
 
+---
+
+### Library version upgrade
+
+CPU Profiler / `sample` shows a symbol whose dylib is a **system** framework
+(`Accelerate`, `libSystem`, `Compression`, `AppleArchive`) rather than the
+app. The name matches `references/library-versions.md`. The win is an OS /
+SDK / link-path update, not a source rewrite. Detect with `otool -L`,
+`dyld_info`, `sw_vers` — not `ldconfig`.
+
+Read `patterns/library-version-upgrade.md`.
+
+---
+
+### Platform libraries first
+
+The hot symbol is *homemade* (`dot_neon`, `my_fft`, `simd_memcpy`) and
+`otool -L` does not show Accelerate / Compression / libSystem owning that
+work. Guide rec 2 (High/High): call vDSP/BLAS/`memcpy`/GCD first. Custom
+ASIMD is the fallback.
+
+Read `patterns/platform-libs-first.md`.
+
+---
+
 ### Fast CRC32C
 
-`perf report` or `perf annotate` shows `crc32b`, `crc32l`, or `crc32q`
-instructions dominating a hot function, or a `pclmulqdq`/`vpclmulqdq` chain
-with only one or two vector accumulators. A single-accumulator CRC32C loop is
-latency-bound at roughly 2.5 GB/s per GHz regardless of CPU clock speed or
-memory bandwidth — the bottleneck is instruction-level serialization, not data
-throughput. The function name itself (`crc32c`, `crc32_c`, `compute_crc32c`)
-is sufficient trigger even without inspecting the loop body.
+`CRC32B` / `CRC32CX` / `CRC32CW` with a **single** accumulator, or a
+byte-table CRC, dominates a checksum. One CRC32CX is latency-bound; three
+independent streams hide that latency. Production checksums: Compression /
+zlib in libSystem if Castagnoli is not required; otherwise
+`library/crc32c_arm64.c`.
 
 Read `patterns/fast-crc32c.md`.
 
@@ -138,12 +165,11 @@ Read `patterns/fast-crc32c.md`.
 
 ### SIMD sort
 
-`perf report` shows `std::sort`, `_introsort_loop`, `__gnu_cxx::__ops`,
-`std::__introsort_loop`, or `std::__sort` among the hottest symbols, on a
-numeric primitive type (`float`, `double`, `int32_t`, `uint32_t`, `int64_t`,
-`uint64_t`). `perf stat` may also show elevated `branch-misses` — introsort's
-comparator branches are hard to predict. See `patterns/simd-sort.md` for the
-x86-simd-sort replacement and expected speedup.
+`std::sort`, introsort, or `qsort` is hot on `float` / `double` / `int32_t`
+/ `uint32_t` / `int64_t` / `uint64_t`. Discarded/branch-mispredict events
+are often elevated. Use `vDSP_vsort` where it fits, `std::sort` for general
+objects, Highway if a vectorized numeric sort is required. Do not pull an
+x86 SIMD-sort repo onto M-series.
 
 Read `patterns/simd-sort.md`.
 
@@ -151,11 +177,9 @@ Read `patterns/simd-sort.md`.
 
 ### Known algorithm — optimized SIMD replacement available
 
-`perf report` shows a function whose name matches a well-known algorithm in
-the table below. These algorithms have established vectorized implementations
-that the agent can generate directly. Identify the ISA levels supported by
-the target CPU (check `/proc/cpuinfo`), then read the algorithm's entry for
-the dispatch strategy and implementation notes.
+CPU Profiler shows a function whose name matches the table below. Generate
+the ASIMD / DotProd / I8MM / SME version directly. Dispatch with
+`hw.optional.arm.FEAT_*`, not a vendor uarch string.
 
 | Algorithm | Common function names in code |
 |-----------|-------------------------------|
@@ -163,23 +187,18 @@ the dispatch strategy and implementation notes.
 | Hamming Distance | `hamming_distance`, `hamming_dist`, `hamming`, `count_differing_bits`, `bit_diff_count`, `popcount_xor` |
 | Jaccard Distance | `jaccard_distance`, `jaccard_similarity`, `jaccard_sim`, `jaccard_index`, `jaccard_coeff`, `iou` |
 
-If a function name from the table is present in the profile, read
-`references/known-algorithms-impl.md` for the ISA levels, dispatch guards, and
-implementation notes. Do not load it otherwise.
+If a name matches, read `references/known-algorithms-impl.md`. Do not load it
+otherwise.
 
 ---
 
 ### CV thundering herd
 
-`perf report` shows `futex_wake`, `try_to_wake_up`, or
-`__pthread_cond_broadcast` consuming significant cycles — not lock contention
-symbols like `spin_lock_slowpath`. `perf stat -e context-switches` shows
-context-switch rate scaling with the number of waiting threads per broadcast.
-`perf trace -e futex` shows frequent `FUTEX_WAKE` with `val=INT_MAX` (broadcast)
-or rapid bursts of `val=1` (notify_one loop). IPC collapses while CPU utilization
-remains high — cores are busy with scheduler dispatch and mutex re-acquisition,
-not useful work. Key differentiator from lock contention: `perf lock stat`
-shows normal hold/wait times.
+`psynch_cvbroad`, `__psynch_cvbroad`, `kevent`, `dispatch_kevent_worker`, or
+a GCD wake path is hot. Context-switch rate scales with waiter count.
+Useful work collapses while CPU stays busy. Differentiator from lock
+contention: the lock hold is short; the cost is N useless wakes. Preferred
+fix: GCD. Still valid: precise wakeup, semaphore.
 
 Read `patterns/cv-thundering-herd.md`.
 
@@ -187,34 +206,187 @@ Read `patterns/cv-thundering-herd.md`.
 
 ### Mutex to rwlock
 
-**Kernel mutex**: `perf report` shows `osq_lock` (the kernel mutex Optimistic
-Spin Queue), `mutex_lock`, or `__mutex_lock_slowpath` consuming significant
-cycles, with cycle count growing as core count increases.
-
-**User-space pthread mutex**: `perf report` shows `pthread_mutex_lock` /
-`__lll_lock_wait` on the lock path and `futex_wait` / `futex_wake` in the
-kernel slow path. Context-switch rate scales with thread count as threads
-sleep and wake on the futex.
-
-In both cases, the call chain traces to a mutex protecting a lookup, search,
-or status-check operation that rarely modifies data. `perf lock stat` confirms
-high `contentions` relative to `acquisitions` and `wait_total` >> `hold_total`.
-IPC degrades with core count even though user-space work remains constant —
-the incremental cycles are pure lock serialization overhead from readers
-blocking each other.
+`pthread_mutex_lock`, `psynch_mutexwait`, or `os_unfair_lock` is prominent
+on a lookup/search/cache-read whose writes are rare. Dual-profile: IPC /
+Useful drops as threads grow while user work is constant. User-space Darwin
+fix: `pthread_rwlock`, or a GCD concurrent queue with barrier writes.
+`os_unfair_lock` stays correct for *short exclusive* sections.
 
 Read `patterns/mutex-to-rwlock.md`.
 
 ---
 
-### Library version upgrade
+### GPR ↔ vector moves
 
-`perf report` or `perf annotate` shows a symbol whose DSO column names a
-system library (`.so` file) rather than the application binary. The function
-name matches an entry in `references/library-versions.md` — a known hotspot
-for which a newer library version ships a significantly better implementation.
+Hot loop is dense in `FMOV` (general), `UMOV`, `INS` (general),
+`DUP` (general). Each move eats a load-issue slot and ~3–5 cycles
+(Appendix A / Guide 5.5.1–5.5.2). Load FP data into V, keep it there, store
+from V. Prefer `FMOV` over `UMOV`/`SMOV` when no extend is needed.
 
-The application code itself is not the bottleneck. The gain comes from the
-library update, not from any source change.
+Read `patterns/gpr-vector-moves.md`.
 
-Read `patterns/library-version-upgrade.md`.
+---
+
+### Taken branch / CSEL
+
+CPU Bottlenecks **Delivery** (fetch bandwidth) with high taken-branch
+density (`INST_BRANCH_TAKEN` / `INST_ALL` approaching 1/8). `B.cond` on
+unpredictable short if/else that CSEL/CSET/FCSEL could if-convert. Unroll
+and straighten loops first; do not NOP-align branch targets.
+
+Read `patterns/taken-branch-and-csel.md`.
+
+---
+
+### Fused MAC
+
+Annotate shows `FMUL` immediately followed by `FADD`/`FADDS` (or integer
+`MUL`+`ADD`) on the same registers. Rewrite as `FMLA` / `FMADD` /
+`vfmaq_f32` / `MADD`. One issue, one rounding for FP, shorter dependency.
+
+Read `patterns/fused-mac.md`.
+
+---
+
+### AMP work partition
+
+OpenMP `schedule(static)`, equal chunks, or a barrier after each phase.
+Dual-profile: E-core workers are still in the chunk after P/S cores have
+hit the barrier. Cannot `taskset` onto P cores; hint with QoS. Dynamic
+queue, ≥3× tasks per core, GCD.
+
+Read `patterns/amp-work-partition.md`.
+
+---
+
+### Spin-wait
+
+Tight load of a flag, `WFE`/`YIELD` loop, or homemade backoff occupying
+S/P cores. Guide 7.3: block unless the wait is on the order of a thread
+switch. Spinning pins work onto E cores and steals S/P from the rest of
+the machine.
+
+Read `patterns/spin-wait.md`.
+
+---
+
+### SME engine bounce
+
+`SMSTART` then the core waits on engine results via `FMOV`/`MOVA` every
+tile, or `SMSTOP`/`SMSTART` around a dependent scalar loop. Engine trails
+the core by dozens to thousands of cycles. Isolate core-touched and
+SME-touched data on separate aligned 4 KiB regions; compute a whole ZA
+before extracting.
+
+Read `patterns/sme-engine-bounce.md`.
+
+---
+
+### Weak memory
+
+A producer stores a payload then a flag/pointer with plain `STR`, and the
+consumer observes the flag without `LDAR`/`DMB`. Intermittent torn
+publication, TSan hits, or "works until a P/E migration". Apple silicon is
+not TSO. Use acquire/release, `os_atomic`, or `DMB ISH`.
+
+Read `patterns/weakly-ordered-memory.md`.
+
+---
+
+### sysctl hardcoding
+
+Binary assumes 64 B lines, 4 KiB pages, 8 cores, or "this chip has no SME".
+Wrong padding, wrong cache blocking, illegal SME opcodes on M1–M3, wasted
+ZA on M4+. Query `hw.cachelinesize`, `hw.pagesize`, `hw.perflevel{N}.*`,
+`hw.optional.arm.FEAT_*`. Detect Rosetta with `sysctl.proc_translated`.
+
+Read `patterns/sysctl-hardcoding.md`.
+
+---
+
+### Store forwarding
+
+A wide `LD1`/`LDR` of a value that was just written as several small
+`STRB`/`STRH`/`STP` pieces, or a store/reload that could have stayed in a
+register. Guide rec 44–45: hard-to-predict STLF and many-small-stores-to-one
+load are expensive. Keep the value in a register; if you must store, match
+widths.
+
+Read `patterns/store-forwarding.md`.
+
+---
+
+### Unaligned access
+
+Unaligned `ST1` of Q / streaming-Z vectors in a copy or store loop. Apple
+silicon prefers unaligned **loads** over unaligned stores; wide unaligned
+stores split on 128 B lines. Align destinations; if only one side can be
+aligned, align the stores.
+
+Read `patterns/unaligned-access.md`.
+
+---
+
+### Software prefetch
+
+`PRFM PLDL1KEEP` (or `__builtin_prefetch`) in a unit-stride scan. The
+hardware prefetcher already covers sequential access; extra PRFM steals
+issue and can evict. Recode the access pattern first; prefetch only after
+that fails.
+
+Read `patterns/software-prefetch.md`.
+
+---
+
+### JIT I-cache
+
+Hot `sys_icache_invalidate`, `ic ivau`+`dsb`+`isb`, or `__clear_cache` from
+a JIT emitting tiny traces. Guide rec 9: invalidation is expensive. Batch
+emissions, reuse pages, avoid toggling NX on every stub.
+
+Read `patterns/jit-icache.md`.
+
+---
+
+### Cold-path annotation
+
+A hot function's body is interleaved with error reporters in I-cache.
+Branch-mispredict / Discarded is minor; L1I pressure is the cost. Mark
+callees `[[gnu::cold]]`. Confirm with
+`apple-silicon-profile/tools/gccbranchprob.py` or Clang PGO. Do not
+NOP-align targets; 16 KiB pages make L1I set conflicts likelier for
+page-aligned dylibs.
+
+Read `patterns/cold-path-annotation.md`.
+
+---
+
+### Main-thread blocking
+
+Hangs instrument / MetricKit hang rate (main run loop busy >250 ms),
+Animation Hitches, App Launch time-to-first-draw, or a watchdog
+`.ips` with `0x8badf00d`. CPU Profiler of the hang often shows
+`kevent` / `recv` / `fsync` / `semaphore_wait` on
+`com.apple.main-thread`.
+
+Read `patterns/main-thread-blocking.md`.
+
+---
+
+### SwiftUI update cost
+
+SwiftUI template Long View Body Updates (orange >500 µs, red
+>1000 µs) or a long Update Groups lane with cheap bodies. Hitches
+track coincident with those updates.
+
+Read `patterns/swiftui-update-cost.md`.
+
+---
+
+### Dirty pages / disk writes
+
+Allocations dirty anonymous VM growing across a generation; jetsam
+`rpages * pageSize` (16 KiB); File Activity small-write / `fsync`
+storm; MetricKit disk-write exception.
+
+Read `patterns/disk-and-dirty-memory.md`.

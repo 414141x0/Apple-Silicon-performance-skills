@@ -1,4 +1,7 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Performance Patterns — Design Document
 
 This file records the architectural decisions for the `performance-patterns` skill.
@@ -14,6 +17,8 @@ Update it whenever a structural decision is made or revised.
 - Grow gracefully: adding a new pattern should require no structural changes.
 - Keep context load minimal: agents load only what is relevant to their current
   situation (profile data vs. source code; detection vs. implementation).
+- Prefer platform libraries (Accelerate, vDSP, GCD, libSystem, Compression)
+  before any custom ISA work.
 
 ---
 
@@ -30,9 +35,12 @@ performance-patterns/
 │   └── new-code.md             ← write-time checklist for new performance-sensitive code
 ├── patterns/
 │   ├── <name>.md               ← detection + root cause + fix (or fix summary)
-│   └── <name>-impl.md          ← full implementation guide (only when fix > ~150 lines)
-└── library/
-    └── <capability>.md         ← reusable implementation modules (shared across patterns)
+│   ├── <name>-impl.md          ← full implementation guide (only when fix > ~150 lines)
+│   └── tests/                  ← optional microbenchmarks for a pattern
+├── library/
+│   └── <capability>.md / .c    ← reusable implementation modules (shared across patterns)
+└── references/
+    └── <index>.md              ← version tables, algorithm name indexes
 ```
 
 ---
@@ -46,7 +54,7 @@ performance-patterns/
 2. **Trigger / guideline file** — loaded once to identify which pattern applies
    (trigger files) or to get the write-time checklist (guideline file). Separated
    by context so agents with profile data never load source-code triggers and
-   vice versa. This matters as the catalog grows to 20+ patterns.
+   vice versa.
 3. **Pattern file + optional impl file** — demand-loaded after a pattern is
    identified. The pattern file always covers detection and root cause. The
    impl file is loaded separately only when the agent is about to write the fix.
@@ -87,43 +95,51 @@ on demand.
 
 ---
 
-## Three classes of pattern
+## Two classes of pattern
 
-**Class 1 — Self-contained** *(TTAS, false-sharing, per-cpu-stats)*
+**Class 1 — Self-contained**
 Fix is explanation + code snippets that fit in the main file. Single-file
 structure. No split unless the pattern grows substantially.
 
-**Class 2 — Complex implementation** *(SIMD upconversion, parallel accumulator
-once absorbed)*
+**Class 2 — Complex implementation**
 Detection is compact; implementation is a multi-step algorithm (hundreds of
 lines). Use the two-file split. The `<name>.md` carries detection and a
 self-contained quick fix for simple cases; `<name>-impl.md` carries the full
 algorithm, edge cases, and dispatch wiring.
 
-**Class 3 — Delegating** *(simd-upconversion, parallel-accumulator currently)*
-Detection lives here; implementation lives in another installed skill (currently
-`vector-x86`). Acceptable short-term to avoid duplication and keep content
-in sync. Each delegating pattern file is annotated with
-`*(Class 3 — migration candidate)*` so the intent is visible.
+There is no Class 3. This skill is self-contained: SIMD promotion, CRC32C, and
+runtime dispatch live here. Write-time ISA catalogs stay in
+`apple-silicon-codegen` so they are not duplicated.
 
-### Tipping point for absorbing a Class 3 pattern
+### Current class map
 
-Absorb when **both** of these are true:
-- A user relying solely on this skill would be blocked from completing the task
-  (installation friction is a real cost, not a theoretical one)
-- The delegated skill's content is stable enough to maintain a copy here
-
-When the tipping point is reached: move the implementation content into
-`<name>-impl.md`, remove the delegation call from `<name>.md`, and update the
-delegated skill to note it has been superseded (don't delete it immediately —
-other callers may depend on it).
-
-### Current Class 3 delegation map
-
-| Pattern file | Delegated to | Migration target |
-|---|---|---|
-| `patterns/simd-upconversion.md` | `vector-x86` (zipper algorithm, dispatch) | `patterns/simd-upconversion-impl.md` + `library/cpu-dispatch.md` |
-| `patterns/parallel-accumulator.md` | `vector-x86` (vector-seq templates) | `patterns/parallel-accumulator-impl.md` |
+| Pattern | Class | Notes |
+|---------|-------|-------|
+| `parallel-accumulator.md` | 1 | Scalar 4-acc + ASIMD templates in-file; SME is a pointer |
+| `simd-upconversion.md` | 2 | Width ladder in `simd-upconversion-impl.md` |
+| `missing-restrict.md` | 1 | |
+| `false-sharing.md` | 1 | 128 B lines; dual of pack-hot-vars |
+| `ttas.md` | 1 | Default is *block*, not spin |
+| `per-cpu-stats.md` | 1 | 128 B buckets; thread-group sharding |
+| `cold-path-annotation.md` | 1 | |
+| `cv-thundering-herd.md` | 1 | GCD first |
+| `mutex-to-rwlock.md` | 1 | `pthread_rwlock` / GCD concurrent queue |
+| `library-version-upgrade.md` | 1 | Darwin dylibs, not ELF `.so` |
+| `fast-crc32c.md` | 2 | `fast-crc32c-impl.md` + `library/crc32c_*.c` |
+| `simd-sort.md` | 1 | Accelerate / `std::sort` / Highway |
+| `gpr-vector-moves.md` | 1 | Keep a value in one file |
+| `taken-branch-and-csel.md` | 1 | CSEL/CSET over unpredictable `B.cond` |
+| `fused-mac.md` | 1 | FMLA / MADD / `vfmaq` |
+| `amp-work-partition.md` | 1 | Dynamic queue, ≥3× tasks/core, QoS |
+| `spin-wait.md` | 1 | Block idle threads |
+| `sme-engine-bounce.md` | 1 | No core↔engine ping-pong; 4 KiB isolation |
+| `platform-libs-first.md` | 1 | Accelerate / simd / GCD / memcpy first |
+| `weakly-ordered-memory.md` | 1 | DMB/DSB or acquire/release |
+| `sysctl-hardcoding.md` | 1 | Never hardcode 64 B / 4 KiB / core count |
+| `store-forwarding.md` | 1 | Avoid hard-to-predict STLF |
+| `unaligned-access.md` | 1 | Prefer unaligned loads over stores |
+| `software-prefetch.md` | 1 | PRFM sparingly; recode for HW prefetcher |
+| `jit-icache.md` | 1 | Avoid frequent I-cache invalidation |
 
 ---
 
@@ -138,7 +154,9 @@ shared capability.
 
 | File | Purpose | Used by |
 |------|---------|---------|
-| `library/cpu-dispatch.md` | Runtime CPU dispatch: `target_clones` and `__builtin_cpu_supports` | simd-upconversion, parallel-accumulator, any future multi-variant pattern |
+| `library/cpu-dispatch.md` | Runtime dispatch: `sysctl` `FEAT_*` + function pointers | simd-upconversion, parallel-accumulator, fast-crc32c, known-algorithms |
+| `library/crc32c_arm64.c` | ARM CRC32CX multi-accumulator CRC32C | fast-crc32c |
+| `library/crc32c_portable.c` | ISA-neutral table CRC32C | fast-crc32c fallback |
 
 ### Adding a library module
 
@@ -155,9 +173,9 @@ pattern files.
 
 | File | Purpose |
 |------|---------|
-| `references/library-versions.md` | Known library symbols with a newer high-performance version; used by the library-version-upgrade pattern |
-| `references/known-algorithms.md` | Compact index: algorithm name → common function names. Inlined into trigger files so detection costs no extra file load; add a row here when adding a new algorithm. |
-| `references/known-algorithms-impl.md` | Per-algorithm implementation details: ISA levels, dispatch guards, key notes. Demand-loaded only after a function name match is confirmed — do not load speculatively. |
+| `references/library-versions.md` | Known Darwin dylib / framework symbols with a better platform implementation; used by library-version-upgrade |
+| `references/known-algorithms.md` | Compact index: algorithm name → common function names. Inlined into trigger files so detection costs no extra file load |
+| `references/known-algorithms-impl.md` | Per-algorithm implementation details: ASIMD / DotProd / I8MM / SME, dispatch guards. Demand-loaded only after a function name match |
 
 ### Adding a reference file
 
@@ -165,40 +183,29 @@ Create a reference file when data needs to grow independently of pattern
 logic — versioned library lists, algorithm catalogs, CPU feature tables.
 Name the file after what it indexes, not the pattern that reads it.
 
-`linux-perf` owns data collection and hotspot identification. When it identifies
-a known pattern, it invokes `performance-patterns`. The `linux-perf` resolution
-strategies are being migrated here over time; `linux-perf/references/resolution-strategies.md`
-retains the content during the transition with a pointer to this skill.
+---
 
-### `vector-x86`
+## Pattern class note: platform library before custom ISA
 
-**ABSORBED (2026-05-18)** — `vector-x86` content has been fully absorbed into
-`performance-patterns`. The `vector-x86/SKILL.md` is retained with a deprecation
-notice to avoid breaking existing references, but it should not be invoked for new
-work.
+A first-class pattern class, not a footnote. Guide recommendation 2 is
+High/High: explore Accelerate, vDSP, BLAS, `memcpy`, GCD, Compression, and
+simd before writing `arm_neon.h` or SME. `patterns/platform-libs-first.md` is
+the detection playbook. `guidelines/new-code.md` item 2 is the write-time form.
+Custom ASIMD / SME is correct only after that check fails.
 
-Absorption mapping:
+---
 
-| `vector-x86` capability | Destination in `performance-patterns` |
-|--------------------------|--------------------------------------|
-| Zipper algorithm (Capability 1) | `patterns/simd-upconversion.md` → `patterns/simd-upconversion-impl.md` |
-| Vector-sequential optimization (Capability 2) | `patterns/parallel-accumulator.md` + `patterns/simd-upconversion-impl.md` (AVX-512) |
-| Runtime CPU dispatch (Capability 3) | `library/cpu-dispatch.md` |
+## Cross-skill handoff
 
-Decision to absorb: users working exclusively with `performance-patterns` were
-blocked on SIMD implementation tasks because the zipper algorithm lived in a
-separate skill. Single-skill completeness outweighed the modularity benefit once
-the content was stable enough to maintain a copy.
+`apple-silicon-profile` owns data collection (Instruments, `xctrace`, CPU
+Bottlenecks, CPU Profiler, CPU Counters) and hotspot identification. When it
+identifies a known pattern, it invokes `performance-patterns`.
 
-The `cpu-dispatch.md` library module in this skill synthesizes the dispatch
-content from `vector-x86/references/dispatch.md`. When `vector-x86` is
-eventually absorbed, its zipper and vector-seq content maps to
-`patterns/simd-upconversion-impl.md` and `patterns/parallel-accumulator-impl.md`.
+`apple-silicon-codegen` owns write-time ISA (integer, ASIMD, SSVE/SME,
+microarch, Appendix A/B). Pattern files may point at it; they must not paste
+chapter catalogs.
 
-### `cpuid-check`
-
-Any dispatch code generated by this skill should be validated by `cpuid-check`.
-This is called out in `library/cpu-dispatch.md` and in relevant pattern files.
+Do not send the agent to `linux-perf` for Apple silicon work.
 
 ---
 

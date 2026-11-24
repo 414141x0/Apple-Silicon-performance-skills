@@ -1,120 +1,146 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
-# Pattern: test-and-set spinlock → test-and-test-and-set (TTAS)
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
+# Pattern: test-and-set spinlock → block first, TTAS only for short waits
 
 ## When to apply
 
-Apply when a spinlock is implemented as a bare Test-and-Set loop — a `cmpxchg`
-(or equivalent atomic exchange) with no preceding ordinary read. Every iteration
-of the spin loop acquires the cache line **exclusively**, even on failure, causing
-high cache-coherence traffic under contention.
+Apply when a lock or flag wait is implemented as a bare Test-and-Set loop —
+a `CAS` / `LDXR`+`STXR` with no preceding ordinary read — or as any spin
+that occupies a core while idle.
+
+**Default on Apple silicon is to block, not to spin** (Guide 7.3). TTAS is
+the repair for the *rare* wait whose duration is on the order of a thread
+switch. Longer waits: GCD, `os_unfair_lock`, pthreads, C11. Homemade queued
+locks are not tuned for cluster topology and will mis-behave across families.
+
+Also read `patterns/spin-wait.md` whenever the loop is idle-but-runnable.
 
 ### Source code signals
 
-- `while (!cmpxchg(&lock, UNLOCKED, LOCKED)) _mm_pause();` — no prior `read`
-- `while (__sync_lock_test_and_set(&lock, 1)) { /* spin */ }` — no pre-read
-- Any spinlock body that performs only an atomic RMW without a preceding shared
-  read of the lock variable
-- `pthread_spin_lock` wrappers that are suspected to be TAS internally
+- `while (!atomic_compare_exchange_weak(&lock, &unlocked, locked)) {}` with
+  no prior relaxed load
+- `while (__sync_lock_test_and_set(&lock, 1)) { /* spin */ }`
+- Any spinlock body that performs only an atomic RMW without a shared read
+  of the lock variable
+- `while (!flag) ;` / `WFE` / `YIELD` backoff loops
 
 ### Profiling signals
 
-- `lock cmpxchg` (or `lock xchg`, `lock cmpxchg8b`) clusters in `perf annotate`
-  with high sample density inside a tight spin loop
-- `spin_lock`, `cmpxchg`, `try_lock`, or `cas` wrappers prominent in `perf report`
-- Throughput **drops** (not just plateaus) as thread count increases — a strong
-  indicator of cache-line thrashing
-- `perf c2c` shows true sharing on a lock variable where accessor functions
-  contain `cmpxchg` in a loop
+- `CAS` or `LDXR`/`STXR` clusters in CPU Profiler with high sample density
+  and no ordinary load of the lock first
+- Throughput **drops** (not just plateaus) as thread count increases
+- S/P cores busy in a wait loop while other work could run
+- `ATOMIC_OR_EXCLUSIVE_FAIL` elevated on the lock line
 
 ---
 
 ## Why this is slow
 
-`cmpxchg` always acquires the cache line **exclusively**, even on failure, so
-every spinning waiter fights the others (and the lock holder) for the line.
-Bus traffic grows as **O(N²)** under contention, and any protected data sharing
-the lock's cache line gets caught in the same bounce (visible as false sharing
-in `perf c2c`).
+`CAS` / exclusive pairs acquire the line **exclusively** even on failure, so
+every spinning waiter fights the holder and the other waiters. Traffic grows
+badly under contention, and any protected data sharing the lock's 128 B line
+gets caught in the same bounce.
+
+Spinning also occupies S/P cores. The system may then leave real work on E
+cores, and it cannot use that idle time for other threads (Guide 7.3).
+
+`LDXR`/`STXR` loops are the slow path next to single-instruction LSE
+(`LDADD`, `CAS`) — Guide rec 65.
 
 ---
 
-## The fix: Test-and-Test-and-Set
+## The fix
 
-Read the lock non-atomically first (shared cache line, no bus traffic) and only
-attempt the atomic operation when there is a realistic chance of success:
+### 0. Prefer a tuned API (almost always)
+
+| Need | API |
+|------|-----|
+| Short exclusive critical section | `os_unfair_lock` |
+| Mutex / condvar | pthreads or C11 |
+| Task / queue | GCD (`dispatch_sync`, serial queue, `dispatch_semaphore`) |
+| Atomic add / or / and | C11 `atomic_fetch_*` → LSE `LDADD` / `LDSET` |
+| Read-mostly shared data | `pthread_rwlock` or GCD concurrent queue — `patterns/mutex-to-rwlock.md` |
+
+Do not write a queued spinlock from exclusive pairs. Those APIs are tuned
+per chip for topology, protocol, and latency.
+
+### 1. If you must wait a known-short time: TTAS
+
+Read the lock non-atomically first (shared line, no exclusive RMW) and only
+attempt `CAS` when it looks free. Use LSE `CAS`, not `LDXR`/`STXR`.
 
 ```c
-/* Test-and-Test-and-Set */
-while (1) {
-    /* Phase 1: spin cheaply on a shared read until lock looks free */
-    while (atomic_read(&lock) == LOCKED)
-        _mm_pause();
-    /* Phase 2: attempt the atomic acquire */
-    if (cmpxchg(&lock, UNLOCKED, LOCKED) == UNLOCKED)
-        break;
-    /* cmpxchg failed — another thread won the race; back to phase 1 */
+#include <stdatomic.h>
+
+enum { UNLOCKED = 0, LOCKED = 1 };
+
+void lock_ttas(_Atomic int *lock)
+{
+    for (;;) {
+        while (atomic_load_explicit(lock, memory_order_relaxed) == LOCKED) {
+            /* Wait is ~thread-switch. Longer → block instead (spin-wait.md). */
+            __asm__ __volatile__("yield");
+        }
+        int expected = UNLOCKED;
+        if (atomic_compare_exchange_weak_explicit(
+                lock, &expected, LOCKED,
+                memory_order_acquire, memory_order_relaxed))
+            break;
+    }
 }
 ```
 
-Waiters now hold the cache line in **shared** mode during the spin. The exclusive
-acquisition only happens when the lock genuinely transitions to unlocked, so bus
-traffic drops from O(N²) to O(N) under contention.
+Waiters hold the line in **shared** mode during the spin. Exclusive RMW
+happens only on a real unlock→lock transition.
 
-### Optimized variant (try-first)
+On M4+ (`hw.optional.arm.FEAT_WFxT`), a timed `WFET`/`WFIT` can replace a
+naked `yield` for sub-quantum waits. If the wait is *not* known-short, do
+not spin at all — see `patterns/spin-wait.md`.
 
-For the common uncontended case, try the atomic operation first to avoid the extra
-read latency on an uncontended lock, then fall back to the spin-read loop:
+### 2. Try-first (uncontended fast path)
 
 ```c
-/* TTAS with try-first — lower latency when lock is uncontended */
-if (cmpxchg(&lock, UNLOCKED, LOCKED) != UNLOCKED) {
-    do {
-        while (atomic_read(&lock) == LOCKED)
-            _mm_pause();
-    } while (cmpxchg(&lock, UNLOCKED, LOCKED) != UNLOCKED);
+void lock_ttas_tryfirst(_Atomic int *lock)
+{
+    int expected = UNLOCKED;
+    if (atomic_compare_exchange_strong_explicit(
+            lock, &expected, LOCKED,
+            memory_order_acquire, memory_order_relaxed))
+        return;
+    lock_ttas(lock);
 }
 ```
 
-The first `cmpxchg` succeeds immediately when the lock is free (the common case),
-incurring no extra overhead. Only under contention does it fall through to the
-spin-read loop.
-
-### Lock and data on the same cache line
-
-If the `perf c2c` offset analysis shows that protected data shares a cache line
-with the lock variable, separating them onto different cache lines compounds the
-benefit significantly:
+### 3. Lock and data on different 128 B lines
 
 ```c
 struct my_lock {
-    atomic_int lock;
-    char _pad[60];      /* push protected data to the next cache line */
-} __attribute__((aligned(64)));
+    _Atomic int lock;
+    char _pad[124];
+} __attribute__((aligned(128)));
 ```
 
 ---
 
 ## Verification
 
-After applying the fix:
-
-1. **Correctness** — run the existing test suite; lock semantics are unchanged.
-2. **Profiling** — rerun `perf annotate` and confirm the `lock cmpxchg` density
-   drops (the shared-read loop should be the dominant instructions now).
-3. **Scaling** — measure throughput at 1, 2, 4, 8, … threads; the curve should
-   no longer decline under contention.
-4. **c2c** (if false sharing was present) — rerun `perf c2c` and confirm HITM
-   drops on the lock's cache line.
+1. **Correctness** — existing tests; lock semantics unchanged.
+2. **Profiling** — `CAS` / exclusive-fail density drops; a blocking API
+   should show `psynch_*` / GCD sleeps, not a hot spin.
+3. **Scaling** — throughput at 1, 2, 4, … threads no longer declines.
+4. **QoS** — confirm S/P cores are not pinned in the wait loop
+   (`thread_info` / Instruments System Trace).
 
 ---
 
 ## Presenting this to the user
 
-1. Show the current spin loop from the source code with `/* ◄ exclusive acquire */`
-   annotating the `cmpxchg` line.
-2. Explain the exclusive-acquire / cache-line-bounce mechanism in one short
-   paragraph.
-3. Present both the basic TTAS form and the try-first variant, and recommend
-   the try-first for production code.
-4. Note whether the lock and protected data share a cache line (visible from
-   the c2c Offset analysis) — if so, flag the padding fix as a compound benefit.
+1. Show the spin with `/* exclusive acquire every fail */` on the `CAS`.
+2. Lead with **block, do not spin**. Recommend GCD / `os_unfair_lock` /
+   pthreads.
+3. Offer TTAS only if the wait is known to be ~one thread switch. Show
+   relaxed-load then LSE `CAS`, `yield` (or WFxT), 128 B padding.
+4. Point at `patterns/spin-wait.md` for the idle-thread rule.
+5. Note LSE (`LDADD`/`CAS`) over `LDXR`/`STXR`.

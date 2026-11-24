@@ -1,44 +1,59 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Pattern: Fast CRC32C
 
 ## When to apply
 
 ### From profiling output
-- `crc32b`, `crc32l`, or `crc32q` instructions dominate a hot function in `perf annotate`
-- A `pclmulqdq` or `vpclmulqdq` chain is hot but the loop has only one or two vector accumulators
-- A function whose name contains `crc32c`, `crc32_c`, or `compute_crc32c` appears in `perf report`
+- `CRC32B` / `CRC32CX` / `CRC32CW` with a **single** accumulator dominates
+  a hot function in CPU Profiler
+- A function named `crc32c` / `crc32_c` / `compute_crc32c` is prominent
+- A byte-table CRC is hot (portable fallback running on a machine that
+  has CRC32)
 
 ### From source code review
-- A loop with a single `_mm_crc32_u64` / `_mm_crc32_u32` accumulator variable
+- A loop with a single `__crc32cd` / `__crc32cw` accumulator
 - A byte-by-byte or word-by-word table-lookup CRC32C loop
-- Any function whose name strongly suggests CRC32C (`crc32c`, `calc_crc32c`, `hash_crc32c`, etc.) — the name alone is enough signal to check the implementation
+- Any function whose name strongly suggests CRC32C (`crc32c`,
+  `calc_crc32c`, `hash_crc32c`) — the name alone is enough to inspect
 
 ### When writing new code
-- You need a CRC32C function for any purpose (checksums, hashing, data integrity). Do not write a new one — use this pattern directly.
+- You need CRC32C (Castagnoli, iSCSI RFC 3720). Do not write a new one —
+  use this pattern. If any checksum will do, Compression.framework /
+  zlib in libSystem first (`patterns/platform-libs-first.md`). zlib's
+  `crc32()` is a **different polynomial**.
 
 ---
 
 ## Why naive implementations are slow
 
-A single `_mm_crc32_u64` has ~3-cycle latency and can only process 8 bytes per call.  With one accumulator, throughput is limited to **8 bytes / 3 cycles ≈ 2.5 GB/s per GHz** regardless of memory bandwidth.
+A single `CRC32CX` (`__crc32cd`) has ~3-cycle latency (Appendix A) and
+processes 8 bytes per instruction. One accumulator is limited to
+roughly 8 bytes / 3 cycles regardless of memory bandwidth.
 
-A basic PCLMULQDQ vector loop without interleaving vector and scalar streams leaves the scalar CRC32 execution unit idle, and vice-versa.
+A 256-entry byte table is worse: ~1–3 GB/s, one byte per dependent load.
 
-The [corsix fast-crc32](https://github.com/corsix/fast-crc32/) **fusion** algorithm runs VPCLMULQDQ (vector path) and `_mm_crc32_u64` (scalar path) in parallel — they use different CPU execution ports, so neither waits on the other.  Independently, it also uses multiple independent vector accumulators to saturate VPCLMULQDQ throughput.
+Three independent CRC32CX streams hide that latency; a PMULL
+(`vmull_p64`) fold of 64-byte blocks is the further step when someone
+adds it. Correctness first: the library ships a 3-accumulator CRC32CX
+loop plus the portable table.
 
-**Representative speeds (CRC32C, single core):**
-
-| CPU | Naive scalar | Chromium AVX-512 | corsix fusion |
-|-----|---:|---:|---:|
-| Cascade Lake | ~15 GB/s | — | **31.5 GB/s** |
-| Ice Lake | ~22 GB/s | 41 GB/s | **64 GB/s** |
-| Sapphire Rapids | ~23 GB/s | 65 GB/s | **97 GB/s** |
+**Polynomial.** CRC32C is Castagnoli `0x1EDC6F41` (reflected
+`0x82F63B78`) — the same polynomial as `library/crc32c_portable.c`.
+Do not mix with IEEE CRC-32 (`0x04C11DB7` / reflected `0xEDB88320`).
 
 ---
 
 ## The fix
 
-Read `patterns/fast-crc32c-impl.md` for the drop-in implementation.  It provides three pre-written C files and a dispatch wrapper that selects the best available path at runtime.
+1. If a generic checksum is enough: Compression.framework or zlib in
+   libSystem. → `patterns/platform-libs-first.md`
+2. If CRC32C is required: read `patterns/fast-crc32c-impl.md`. It
+   provides `library/crc32c_arm64.c` (CRC32CX, 3 streams),
+   `library/crc32c_portable.c` (table fallback), and a function-pointer
+   dispatch wrapper (`apple_feat` / `hw.optional.armv8_crc32`).
 
 ---
 
@@ -46,15 +61,14 @@ Read `patterns/fast-crc32c-impl.md` for the drop-in implementation.  It provides
 
 ### Correctness
 
-CRC32C of an empty buffer with seed 0 must be `0x00000000`.  A known test vector:
+```
+crc32c(0, "", 0)              == 0x00000000
+crc32c(0, "123456789", 9)     == 0xE3069283
+```
 
-```
-crc32c(0, "123456789", 9) == 0xE3069283
-```
+Split-buffer combine of the same bytes must match a one-shot CRC.
 
 ### Performance
-
-A quick before/after timing loop:
 
 ```c
 uint32_t crc = 0;
@@ -62,12 +76,19 @@ for (int i = 0; i < 10000; i++)
     crc = crc32c(crc, buf, buf_len);
 ```
 
-Run with `perf stat -e cycles` or `clock_gettime`.  Divide total bytes processed by elapsed time to get GB/s.
+Time with `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`. Divide total bytes
+by elapsed time to get GB/s. Expect the ARM path well above the portable
+~1–3 GB/s table.
 
 ---
 
-## Presenting to the user
+## Presenting this to the user
 
-- Report the **before/after throughput in GB/s** if measurable, or estimate from the CPU tier table above.
-- Note that CRC32C is a **standard** checksum (iSCSI RFC 3720, Btrfs, ext4, PostgreSQL) — choosing this implementation does not change the checksum value.
-- Credit the source: implementations in `library/crc32c_avx512_vpclmulqdq.c` were generated by the [corsix fast-crc32](https://github.com/corsix/fast-crc32/) tool (MIT or zlib license).
+- Report before/after throughput in GB/s if measurable.
+- Note that CRC32C is a **standard** checksum (iSCSI RFC 3720) — this
+  implementation does not change the checksum value.
+- Point at `library/crc32c_arm64.c` as the Apple silicon path and
+  `crc32c_portable.c` as the ISA-neutral fallback (Rosetta, or a build
+  without CRC32).
+- If they did not need Castagnoli specifically, offer Compression /
+  libSystem instead.

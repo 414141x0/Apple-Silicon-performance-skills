@@ -1,89 +1,109 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Pattern: Library version upgrade
 
 ## When to apply
 
-A function from a **system library** (a `.so` not owned by the application)
-appears in the hot path of a `perf report` or `perf annotate` profile, AND
-that symbol appears in the version table in `references/library-versions.md`.
+A function from a **system dylib / framework** (not owned by the application)
+appears in the hot path of a CPU Profiler / `sample` profile, AND that
+symbol appears in the table in `references/library-versions.md`.
 
 This is a low-effort performance win: the optimized code already exists and
-is production-tested — the only question is whether the installed version is
-new enough to include it.
+is production-tested — the only question is whether the process is linking
+the OS copy (and a new enough OS / SDK) rather than a bundled substitute.
+
+If the hot symbol is *homemade* and Accelerate / libSystem would do the
+same job, that is `patterns/platform-libs-first.md`, not this pattern.
 
 ## Why it matters
 
-System libraries accumulate targeted optimizations over time — often ISA-specific
-(AVX-512, SHA-NI, VPCLMULQDQ, etc.) — that are invisible to application code.
-A version gap can mean the application is silently running an unoptimized
-implementation despite the hardware supporting a much faster path.
+Darwin system libraries accumulate chip-specific paths (ASIMD, SME on
+M4+, private matrix hardware you cannot emit on earlier chips, tuned
+`memcpy`) that are invisible to application code.
+A bundled OpenBLAS, FFTW, zlib, or an old OpenSSL `.dylib` can silently
+run a generic kernel on hardware that already has a faster one in
+Accelerate / libSystem / Compression / CommonCrypto.
 
 ## Detection
 
 ### Step 1 — Identify the hot library symbol
 
-From `perf report` or `perf annotate` output, find symbols where the DSO column
-shows a `.so` file rather than the application binary.  A line like:
+From CPU Profiler or `sample`, find symbols whose binary / dylib column
+is a system path rather than the application:
 
 ```
-  12.34%  myapp  libcrypto.so.3  [.] gcm_init_avx
+  12.3%  myapp  /usr/lib/libBLAS.dylib  cblas_sgemm
+  8.1%   myapp  libopenblas.0.dylib     sgemm_nn
 ```
 
-gives you the symbol name (`gcm_init_avx`) and the `.so` file (`libcrypto.so.3`).
+Note both the symbol and the dylib. `otool -L` on the process binary
+shows what was actually linked:
+
+```bash
+otool -L ./myapp
+dyld_info -dependents ./myapp
+```
 
 ### Step 2 — Look up the symbol
 
-Read `references/library-versions.md` and check whether the symbol appears in
-the version table.
+Read `references/library-versions.md` and check whether the symbol (or
+its platform equivalent) appears in the version table.
 
 - **Match found** → proceed to Step 3.
 - **No match** → this pattern does not apply; continue with other analysis.
 
-### Step 3 — Detect the installed version
+### Step 3 — Detect what is installed / linked
 
-Use the version detection primitives in `references/library-versions.md`.
-Try the **generic `readlink` method** first — most libraries encode their full
-version in the real `.so` filename (e.g. `libz.so.1 → libz.so.1.2.11`).
-If that does not yield a useful version string, fall back to the
-library-specific primitive listed there.
+Use the detection primitives in `references/library-versions.md`. Try, in
+order:
+
+1. `otool -L` / `dyld_info -dependents` — is the OS framework linked, or a
+   bundled `.dylib`?
+2. `sw_vers -productVersion` and `xcrun --show-sdk-version` — OS / SDK
+   floor for the framework's current implementation.
+3. Framework-specific version APIs listed in that file.
+
+Do **not** use `ldconfig`, `readlink -f`, or `ldd`.
 
 ### Step 4 — Compare and report
 
-Parse the installed version string and compare it against the
-**Suggested minimum version** from the table.
-
 Report to the user:
 
-**When installed version is below the minimum:**
+**When a bundled / old path is in use:**
 
 ```
 Library version gap detected
 ────────────────────────────
-Hot symbol : gcm_init_avx  (libcrypto.so.3)
-Library    : OpenSSL
-Installed  : 3.1.4
-Minimum    : 3.3
-Gap        : 2 minor versions behind
-Reason     : Significant AVX-512 optimizations for AES-GCM in 3.3+
+Hot symbol : sgemm_nn  (libopenblas.0.dylib)
+Platform   : Accelerate cblas_sgemm / BLAS
+Linked     : bundled OpenBLAS
+OS / SDK   : macOS 15.x  (SDK 15.x)
+Reason     : OS Accelerate uses SME (M4+) or private matrix hardware
+             you cannot emit (earlier chips); the bundled BLAS does not.
 ```
 
-**When installed version meets or exceeds the minimum:**
+**When the OS library is already current:**
 
 ```
 Library version check: OK
-Hot symbol : gcm_init_avx  (libcrypto.so.3)
-Library    : OpenSSL  3.6.2  (minimum: 3.3)
-The installed version already includes the known optimizations.
-If this symbol is still hot, the bottleneck is elsewhere — consider
-applying the linux-perf skill to profile further inside the function.
+Hot symbol : cblas_sgemm  (Accelerate)
+OS / SDK   : macOS 15.x
+The installed framework already includes the known chip-tuned path.
+If this symbol is still hot, the bottleneck is elsewhere — continue
+with apple-silicon-profile inside the caller (working-set, AMP, …).
 ```
 
-## Presenting to the user
+## Presenting this to the user
 
-- State the gap precisely (installed vs. minimum), not just "update."
-- Include the reason so the user understands what optimization they are missing.
-- Do not prescribe *how* to upgrade — that depends on the user's environment
-  (package manager, containerized build, enterprise distribution, etc.).
-- If the installed version already meets the minimum, say so explicitly and
-  redirect attention to further profiling rather than leaving the user without
-  a next step.
+- State the gap precisely (bundled vs OS, OS/SDK vs suggested floor),
+  not just "update."
+- Include the reason so the user understands which implementation they
+  are missing (SME / platform GEMM, tuned memcpy, Compression, …).
+- Do not prescribe *how* to upgrade — Homebrew vs. Xcode vs. dropping a
+  submodule depends on their environment.
+- If the OS library already meets the floor, say so and redirect to
+  further profiling.
+- If they are not linking the platform library at all, switch to
+  `patterns/platform-libs-first.md`.

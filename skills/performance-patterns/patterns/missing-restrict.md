@@ -1,4 +1,7 @@
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
+
 # Pattern: missing `restrict` on pointer parameters
 
 ## When to apply
@@ -33,16 +36,14 @@ portable.
 
 ### Profiling signals
 
-- `perf annotate` shows a **scalar preamble** before the main loop body —
-  typically a pointer subtraction, comparison, and conditional branch to a
-  scalar fallback — even though the loop body is otherwise simple and
-  vectorizable
-- Two versions of the same loop appear in the assembly: one vectorized
-  (`ymm`/`zmm` instructions), one scalar; the scalar version is the aliasing
-  fallback and should be unreachable in normal use
-- A hot loop is fully scalar (`addss`, `movss`, `mulss`) even though there are
-  no dependencies, branches, or function calls in the loop body — the compiler
-  abandoned vectorization due to aliasing uncertainty
+- CPU Profiler / `llvm-objdump -d` shows a **scalar preamble** before the
+  main loop — pointer subtraction, comparison, and `B.cond` to a scalar
+  fallback — even though the loop body is otherwise simple and vectorizable
+- Two versions of the same loop appear: one packed (`.4S` / `.2D`), one
+  scalar; the scalar version is the aliasing fallback
+- A hot loop is fully scalar (`FADDS`, `FMULS`) even though there are no
+  dependencies, branches, or calls in the body — Clang abandoned
+  vectorization due to aliasing uncertainty
 
 ---
 
@@ -89,24 +90,17 @@ With `restrict`:
 
 ### Confirming the alias check is gone
 
-Check the generated assembly before and after:
-
 ```bash
-# Before: look for pointer subtraction + conditional branch before the loop
-gcc -O2 -S -o before.s add.c
-grep -A20 "add:" before.s   # look for sub/cmp/jb preamble
+# Before: look for pointer subtraction + B.cond before the loop
+clang -O3 -S -o before.s add.c
+# After: preamble gone; packed ASIMD body
+clang -O3 -S -o after.s add.c
 
-# After: the preamble should be gone; loop starts immediately
-gcc -O2 -S -o after.s add.c
-grep -A20 "add:" after.s
+clang -O3 -Rpass=loop-vectorize add.c
 ```
 
-Or with a more targeted check:
-
-```bash
-gcc -O2 -fopt-info-vec=vec.log add.c
-grep "restrict\|alias\|version" vec.log
-```
+Do not use `gcc -fopt-info-vec` as the primary check on Darwin — Apple's
+toolchain is Clang.
 
 ---
 
@@ -130,10 +124,23 @@ grep "restrict\|alias\|version" vec.log
 
 ## Verification
 
-1. **Assembly check** — compare `gcc -O2 -S` output before and after; confirm
-   the scalar aliasing fallback and preamble overhead are gone.
+1. **Assembly check** — compare `clang -O3 -S` output before and after; confirm
+   the scalar aliasing fallback and preamble overhead are gone. Confirm with
+   `clang -O3 -Rpass=loop-vectorize`.
 2. **Correctness** — run the full test suite. If any test fails after adding
    `restrict`, the caller was passing overlapping pointers — remove `restrict`
    and fix the caller instead.
-3. **Profiling** — rerun `perf annotate`; the scalar preamble instructions
-   should disappear from the hot path.
+3. **Profiling** — rerun CPU Profiler; the scalar preamble should disappear
+   from the hot path.
+
+---
+
+## Presenting this to the user
+
+1. Show the function signature without `restrict` and the aliasing preamble
+   in the assembly.
+2. Explain that `restrict` is a no-overlap contract, not a hint the compiler
+   can ignore.
+3. Show the new signature with `const` + `restrict`.
+4. Note C vs C++ (`__restrict__`).
+5. Ask for a test-suite run before calling the change done.

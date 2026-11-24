@@ -1,27 +1,30 @@
 ---
 name: performance-patterns
 description: >-
-  Detect and fix x86/C/C++ performance patterns from source code or profiling
-  output (perf, VTune, flamegraphs). Invoke when the user asks to optimize,
-  review for performance, or write new SIMD/vectorized code — even without
-  profiling data. Trigger on: serial accumulator loops, narrow SIMD (xmm/ymm
-  that could be ymm/zmm), _mm* intrinsics, HITM/cmpxchg clusters, false
-  sharing, missing restrict or vzeroupper, futex_wake/notify_all thundering
-  herd, hot symbol inside a system library (.so) with a version gap, or any
-  request to write a fast reduction, dot product, or CPU-dispatched function.
-  Patterns: serial accumulator, TTAS spinlock, SIMD upconversion (zipper),
-  false sharing, per-CPU stats, missing vzeroupper, missing restrict,
-  cv-thundering-herd, mutex-to-rwlock, CPU dispatch, library version upgrade,
-  fast CRC32C, known algorithms (Cosine Similarity, Hamming Distance,
-  Jaccard Distance), SIMD sort (x86-simd-sort).
+  Detect and fix Apple Silicon / AArch64 / C/C++/Swift-adjacent C performance
+  patterns from source or Instruments/xctrace. Trigger on: serial accumulator,
+  ASIMD/NEON, vfmaq, FMLA, SMSTART, FMOPA, false sharing 128, restrict, TTAS,
+  os_unfair_lock, GCD, QoS, LDADD, CSEL, FMOV GPR-vector, Accelerate, vDSP,
+  CRC32, sysctl FEAT_, P/E cores, static OpenMP partition, spin-wait, SME bounce,
+  hang, hitch, 0x8badf00d, Task.detached, SwiftUI body, Observable, fsync,
+  F_BARRIERFSYNC, XCTStorageMetric, jetsam.
+  Invoke when user asks to optimize, review for performance, or write new SIMD
+  even without a profile.
 ---
 
-<!-- (C) 2026 Intel Corporation, MIT license -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026).
+     Optimization rules are original paraphrases of Apple Silicon CPU
+     Optimization Guide 5.0. MIT license. -->
 
 # Performance patterns skill
 
-A growing catalog of well-known code patterns that cause performance problems,
-with detection signals and resolution playbooks for each.
+A catalog of well-known code patterns that cause performance problems on
+Apple silicon, with detection signals and resolution playbooks for each.
+
+Write-time ISA catalogs, mnemonic tables, and Appendix A latency numbers live
+in `apple-silicon-codegen`. This skill does not duplicate them. Load that skill
+when emitting new ASIMD / SSVE / SME kernels from scratch; load this skill when
+detecting and fixing a known anti-pattern.
 
 ---
 
@@ -31,7 +34,7 @@ with detection signals and resolution playbooks for each.
 
 | Context | Read this file |
 |---------|---------------|
-| You have **profiling output** (perf annotate, perf c2c, perf stat, VTune, flamegraph, etc.) | `triggers/from-profile.md` |
+| You have **profiling output** (Instruments, `xctrace`, CPU Profiler, CPU Counters, CPU Bottlenecks, flamegraphs) | `triggers/from-profile.md` |
 | You are **reading existing source code** and have no profiling data yet | `triggers/from-source.md` |
 | You are **writing new** performance-sensitive C/C++ or SIMD code | `guidelines/new-code.md` |
 
@@ -65,6 +68,48 @@ if the capability is needed.
 
 | Module | What it provides |
 |--------|-----------------|
-| `library/cpu-dispatch.md` | Runtime CPU feature detection and variant selection: `target_clones` (compiler-driven, plain C/C++) and `__builtin_cpu_supports` (hand-written variants). Use whenever a function has multiple performance-level implementations that need to be wired together at runtime. |
-| `patterns/simd-upconversion-impl.md` | Full step-by-step zipper algorithm for doubling vector register width in asm/intrinsics (SSE→AVX2 or AVX2→AVX-512); AVX-512 accumulator template; post-transformation checklist (CPUID guards, vzeroupper, clobber list). |
-| `patterns/fast-crc32c-impl.md` | Drop-in CRC32C library: AVX-512 VPCLMULQDQ fusion (corsix v3s1_s3, 64–97 GB/s), SSE4.2+PCLMULQDQ 3-accumulator (~15–25 GB/s), plain C fallback. Runtime CPU dispatch wrapper included. Use whenever new CRC32C code is needed or an existing implementation is the bottleneck. |
+| `library/cpu-dispatch.md` | Runtime ISA / topology detection via `sysctlbyname("hw.optional.arm.FEAT_*")` and `hw.perflevel{N}.*`. Function-pointer dispatch is the Darwin default. Use whenever a function has multiple performance-level implementations. |
+| `library/crc32c_arm64.c` + `library/crc32c_portable.c` | Drop-in CRC32C: ARM CRC32CX multi-accumulator (`crc32c_arm64.c`) plus ISA-neutral table fallback (`crc32c_portable.c`). Dispatch wrapper is in `patterns/fast-crc32c-impl.md`. Prefer Compression.framework / libSystem when a generic checksum is enough. |
+| `patterns/simd-upconversion-impl.md` | Width-ladder promotion: scalar → ASIMD 128 (`arm_neon.h`) → SSVE predicates / SME ZA for matrix, outer-product, and large-tile dots. Scalar tail, associativity, bandwidth-bound caveat. |
+
+For write-time instruction selection, register pressure, and latency lookup,
+invoke `apple-silicon-codegen` rather than copying chapter catalogs into a
+pattern fix.
+
+---
+
+## Pattern catalog
+
+Load a trigger file first; then open only the matching `patterns/<name>.md`.
+Class 2 patterns have a separate `-impl.md`.
+
+| File | One-line |
+|------|----------|
+| `patterns/platform-libs-first.md` | Accelerate / simd / GCD / memcpy / Compression before custom NEON |
+| `patterns/sysctl-hardcoding.md` | Query `FEAT_*` / 128 B / 16 KiB / core counts; never hardcode |
+| `patterns/parallel-accumulator.md` | Serial `sum +=` → 4-acc → ASIMD `vfmaq` → SME ZA for large GEMM |
+| `patterns/simd-upconversion.md` | Width ladder: scalar → ASIMD 128 → SSVE/SME ZA (`-impl.md`) |
+| `patterns/fused-mac.md` | FMLA / MADD / `vfmaq` over separate mul+add |
+| `patterns/gpr-vector-moves.md` | Keep a value in V *or* X; `FMOV`/`UMOV`/`INS` density |
+| `patterns/taken-branch-and-csel.md` | CSEL/CSET; taken-branch density near 1 in 8 |
+| `patterns/missing-restrict.md` | `restrict` on non-aliased C pointers |
+| `patterns/false-sharing.md` | Independent writers on **128 B** lines; pack hot fields |
+| `patterns/store-forwarding.md` | Hard-to-predict STLF; many small stores into one wide load |
+| `patterns/unaligned-access.md` | Prefer unaligned loads over unaligned wide stores |
+| `patterns/software-prefetch.md` | PRFM sparingly; recode for the HW prefetcher |
+| `patterns/ttas.md` | Block first; TTAS only for ~thread-switch waits; LSE CAS |
+| `patterns/spin-wait.md` | Do not occupy S/P cores in a wait loop |
+| `patterns/amp-work-partition.md` | Dynamic queue, ≥3× tasks/core, QoS; no static OpenMP |
+| `patterns/per-cpu-stats.md` | Shard `LDADD` counters; 128 B buckets |
+| `patterns/cv-thundering-herd.md` | GCD first; precise wakeup; `psynch_cvbroad` / `kevent` |
+| `patterns/mutex-to-rwlock.md` | `pthread_rwlock` / GCD concurrent queue on read-mostly |
+| `patterns/weakly-ordered-memory.md` | DMB/DSB or acquire/release on publication |
+| `patterns/sme-engine-bounce.md` | No core↔engine ping-pong; 4 KiB isolation; no hardcoded SVL |
+| `patterns/cold-path-annotation.md` | `[[gnu::cold]]`; 16 KiB L1I set conflicts; no NOP-align |
+| `patterns/jit-icache.md` | Batch I-cache invalidation |
+| `patterns/fast-crc32c.md` | ARM CRC32CX 3-acc (`-impl.md` + `library/crc32c_arm64.c`) |
+| `patterns/simd-sort.md` | vDSP / `std::sort` / Highway — not an x86 sort repo |
+| `patterns/library-version-upgrade.md` | OS Accelerate / libSystem / Compression vs bundled dylibs |
+| `patterns/main-thread-blocking.md` | Sync I/O on main, `Task { sync }`, `+load`, watchdog `0x8badf00d` |
+| `patterns/disk-and-dirty-memory.md` | 16 KiB dirty pages, WAL, `F_BARRIERFSYNC`, `XCTStorageMetric` |
+| `patterns/swiftui-update-cost.md` | Long `body`, `Observable()`, stored escaping closures |
