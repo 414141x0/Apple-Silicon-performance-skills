@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern: test-and-set spinlock → block first, TTAS only for short waits
 
@@ -10,7 +8,7 @@ Apply when a lock or flag wait is implemented as a bare Test-and-Set loop —
 a `CAS` / `LDXR`+`STXR` with no preceding ordinary read — or as any spin
 that occupies a core while idle.
 
-**Default on Apple silicon is to block, not to spin** (Guide 7.3). TTAS is
+**Default on Apple silicon is to block, not to spin** (rec 61). TTAS is
 the repair for the *rare* wait whose duration is on the order of a thread
 switch. Longer waits: GCD, `os_unfair_lock`, pthreads, C11. Homemade queued
 locks are not tuned for cluster topology and will mis-behave across families.
@@ -44,10 +42,10 @@ badly under contention, and any protected data sharing the lock's 128 B line
 gets caught in the same bounce.
 
 Spinning also occupies S/P cores. The system may then leave real work on E
-cores, and it cannot use that idle time for other threads (Guide 7.3).
+cores, and it cannot use that idle time for other threads (rec 61).
 
 `LDXR`/`STXR` loops are the slow path next to single-instruction LSE
-(`LDADD`, `CAS`) — Guide rec 65.
+(`LDADD`, `CAS`) — rec 65.
 
 ---
 

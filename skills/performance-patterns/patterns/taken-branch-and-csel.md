@@ -1,11 +1,9 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: taken-branch density and unpredictable CSEL
 
 ## When to apply
 
-Apply in two related situations (Guide recs 23–24):
+Apply in two related situations (recs 23–24):
 
 1. **Taken-branch density** is high — a taken branch (loop-back, call, or
    biased-the-wrong-way conditional) about **once every 8 instructions**.
@@ -46,13 +44,13 @@ loop-backs *and* a mispredict factory.
 The fetch unit reads a group of instructions, including bytes past a
 predicted-taken branch, then **throws those extra bytes away**. When taken
 branches are dense, Decode is fed leftovers. Danger starts near **one taken
-branch in eight instructions** (Guide 5.4.4). Short loops hit this first:
+branch in eight instructions** (rec 23). Short loops hit this first:
 every iteration’s loop-back is a taken branch.
 
 Separately, a mispredicted conditional flushes work that already executed
 and loses the chance to have the correct path in flight. If both sides are
 a handful of independent ALU/FP ops, executing **both** and picking with
-`CSEL` is cheaper than gambling on the predictor (Guide 5.4.5).
+`CSEL` is cheaper than gambling on the predictor (rec 24).
 
 Keep a real branch when:
 
@@ -78,7 +76,7 @@ expecting a better predictor (codegen rec 24).
   `[[likely]]` / `[[unlikely]]`; in C, `__builtin_expect`.
 - **Inline** tiny hot callees to delete a taken `BL` and a taken `RET`.
 
-Do **not** NOP-align branch targets (Guide 5.4.3). That grows I-cache
+Do **not** NOP-align branch targets (rec 22). That grows I-cache
 footprint and does not help these cores.
 
 ### 2. `CSEL` / `CSET` / `CSINC` over unpredictable branches

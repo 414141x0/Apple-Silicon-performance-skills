@@ -1,12 +1,10 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: hard-to-predict store-to-load forwarding
 
 ## When to apply
 
 Apply when a hot path **writes memory and quickly reads it back**,
-especially as **many small stores feeding one wide load** (Guide recs
+especially as **many small stores feeding one wide load** (recs
 44–46). The core will try to forward from the store queue. When that
 dependence is sporadic or the bytes come from several stores, the
 predictor either:
@@ -64,7 +62,7 @@ Medium: restructure so the read either happens much later (data
 already in cache, dependence gone) or never happens (the producer
 kept the register).
 
-Named shapes that train the predictor wrong (Guide 5.6.11):
+Named shapes that train the predictor wrong (rec 44):
 **histograms**; **in-place FFT** (tiny radices train a conservative
 predict); **pointer lists into a small object pool**; **hot stack top**
 push/pop; growing structures that were dependent while small. Split
@@ -158,7 +156,7 @@ uint32_t w = (uint32_t)b0
 If you *must* store small and load wide, insert enough independent
 work that the stores drain to L1 before the load — or keep a second
 copy of the loop body for the “small n” case so the predictor is not
-trained on mixed dependent/independent iterations (Guide 5.6.11).
+trained on mixed dependent/independent iterations (rec 44).
 
 ### 4. When register communication is worse, use STLF deliberately
 

@@ -1,12 +1,10 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: platform libraries first (Accelerate, Compression, memcpy, GCD)
 
 ## When to apply
 
 Apply **before writing a single ASIMD intrinsic, SSVE/SME kernel, or
-homegrown memcpy/gzip**. Guide recs 2, 41, 49 are **High / High**.
+homegrown memcpy/gzip**. Recs 2, 41, 49 are **High / High**.
 Apple ships tuned implementations that already use ASIMD, SME, NT
 stores, and the right allocators. A hand NEON dot product is almost
 always a regression against `vDSP_dotpr`.

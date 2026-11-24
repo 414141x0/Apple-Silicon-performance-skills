@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern: condition variable thundering herd
 
@@ -11,7 +9,7 @@ Apply when a condition variable (`pthread_cond_broadcast` / `notify_all`, or a
 wakeups dominate: woken threads race for the mutex, find no work, and
 immediately re-block.
 
-**Preferred Apple fix: GCD** (Guide 7.2.2, 7.4) — serial/concurrent queues,
+**Preferred Apple fix: GCD** (recs 60, 62) — serial/concurrent queues,
 groups, and semaphores are tuned per chip. Hand-rolled tree wakeup is the
 last resort.
 
@@ -137,7 +135,7 @@ mutex re-acquisition storm.
 
 When a leader must wake all N followers and GCD is unavailable, replace the
 O(N) sequential loop with an O(√N) tree. Keep this behind the GCD option;
-custom wakeup trees are exactly the homemade primitive Guide 7.4 warns
+custom wakeup trees are exactly the homemade primitive rec 62 warns
 against.
 
 ### When NOT to apply

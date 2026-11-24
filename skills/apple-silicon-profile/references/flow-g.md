@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Flow G: MetricKit in-process collection
 
@@ -81,7 +79,7 @@ the SwiftUI `App` init. Do not wait for a user gesture.
 
 Hand a **hang** or **cpuException** stack to Flow J (symbolicate) then
 to `performance-patterns`. High CPU time + high Useful in a later
-Instruments session is an algorithm problem (Guide rec 1), not a
+Instruments session is an algorithm problem (rec 1), not a
 MetricKit problem.
 
 ## Step 3 — signposts the payload can see

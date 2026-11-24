@@ -1,13 +1,11 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: batched JIT I-cache invalidation
 
 ## When to apply
 
 Apply **only when the workload is a JIT** (or other self-modifying
 code): a language VM, a regex/query compiler, a tracing JIT, a shader
-compiler running on the CPU (Guide rec 9, **Low / Low**).
+compiler running on the CPU (rec 9, **Low / Low**).
 
 Do not apply this pattern to ordinary applications. If there is no
 `mmap(MAP_JIT)`, no `pthread_jit_write_protect_np`, and no

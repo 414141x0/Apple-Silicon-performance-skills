@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern: serial accumulator → parallel accumulator rewrite
 
@@ -24,8 +22,8 @@ independent.
   disproportionately high sample count in CPU Profiler
 - CPU Bottlenecks: **Processing** (dependency stall) or high **Useful**, with
   **low L1D miss** — not a memory stall
-- Cycles per iteration ≥ FP latency of the op (look up Appendix A for the
-  chip; **~4 cycles** is the FMLA / FADD rule of thumb) despite a short body
+- Cycles per iteration ≥ FP latency of the op (look up
+  `apple-silicon-codegen/references/latency-lookup.md` for the chip; **~4 cycles** is the FMLA / FADD rule of thumb) despite a short body
 
 ---
 
@@ -117,7 +115,7 @@ float dot_asimd(const float * restrict a, const float * restrict b, int n)
 
 Load into V registers (`vld1q_f32`), not into GPR then `FMOV`. Keep live
 V-regs at or under ~25 of 32. Horizontal `vaddvq` belongs in the epilogue,
-not the inner loop (Guide 3.5.3).
+not the inner loop (rec 14).
 
 ### Level 3 — SME ZA / FMOPA for large GEMM and dots
 
@@ -140,7 +138,8 @@ promotion algorithm, read `patterns/simd-upconversion-impl.md`.
 ### Accumulator count guideline
 
 A good rule of thumb is **FP latency ÷ throughput** accumulators to saturate
-the pipeline. With FMLA latency ~4 cycles (Appendix A), **4 vector
+the pipeline. With FMLA latency ~4 cycles
+(`apple-silicon-codegen/references/latency-lookup.md`), **4 vector
 accumulators** covers most loops; use more only while you still have V-regs
 and the loop stays compute-bound.
 
@@ -165,7 +164,8 @@ After applying the fix:
 
 1. Show the current loop with `/* serial dependency */` on the accumulate line.
 2. Explain the latency vs. throughput gap in one short paragraph. Point at
-   Appendix A for the chip's FMLA latency rather than inventing a number.
+   `apple-silicon-codegen/references/latency-lookup.md` for the chip's
+   FMLA latency rather than inventing a number.
 3. **Always warn about floating-point associativity**, even when a quick
    verification shows zero diff on your test data. Use phrasing like:
    *"Reordering FP additions requires associativity. Results may differ from

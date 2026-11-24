@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Building blocks
 
@@ -28,8 +26,12 @@ interpretation overhead beyond the minimum needed to make the numbers
 usable.
 
 Never hardcode cache sizes, line size, page size, core counts, or ISA
-features. Query `sysctl`. Never invent PMU encodings; open Guide Chapter 8
-Table 8.1 and pick events in the Instruments CPU Counters picker.
+features. Query `sysctl` (`sysctl.md`). Never invent PMU encodings; pick
+names from `references/named-events.md` in the CPU Counters picker. A
+missing picker name means the event is not on this chip — skip it. Do
+not invent encodings. Class latencies:
+`apple-silicon-codegen/references/latency-lookup.md`. Family placement:
+`chip-families.md`.
 
 ---
 
@@ -99,7 +101,8 @@ done
 
 Use these values for cache blocking and for the Flow D sweep points
 (1 thread, P/S-count = `hw.perflevel0.physicalcpu`, all-logical =
-`hw.logicalcpu`). Do **not** copy per-chip sizes out of Guide tables.
+`hw.logicalcpu`). Do **not** hardcode per-chip sizes; query `sysctl`
+(`sysctl.md`).
 
 `hw.cachelinesize` is **128** on current Apple silicon. `hw.pagesize` is
 **16384**. Verify; do not assume. The architectural ADRP page is still
@@ -314,16 +317,16 @@ work.
 
 Do **not** put encodings on the command line. To count a named event:
 
-1. Open Guide **Table 8.1** for this chip family (M1 / M2 / M3 / M4 / M5
-   columns).
-2. Confirm the event exists (a blank in the table means "not on this
-   family").
-3. In Instruments: CPU Counters → recording options → event picker →
+1. Pick names from `references/named-events.md` in the CPU Counters
+   picker. A missing picker name means the event is not on this chip —
+   skip it. Do not invent encodings.
+2. In Instruments: CPU Counters → recording options → event picker →
    select the name.
-4. Or: `--show-recording-options`, copy the JSON, fill `allEventsAndFormulas`
+3. Or: `--show-recording-options`, copy the JSON, fill `allEventsAndFormulas`
    using names the picker accepts, pass `--recording-options file.json`.
 
-Useful *names* to look up (picker labels, not encodings):
+Useful *names* to look up (picker labels, not encodings; family and
+footnotes in `references/named-events.md`):
 
 - Fail / success density: `ATOMIC_OR_EXCLUSIVE_FAIL`,
   `ATOMIC_OR_EXCLUSIVE_SUCC`
@@ -338,23 +341,10 @@ Useful *names* to look up (picker labels, not encodings):
 - MTE (M5): `LDST_OLDEST_MTE_TAG_CHECK_CYCLE`,
   `LDST_MEM_ACCESS_CHECKED_X2K`
 
-Footnotes the agent must not violate (open Table 8.1; do not copy
-encodings):
-
-- **`INST_BRANCH_COND` changes by family.** M3-and-prior counted only
-  `B.<cond>`; M4 adds `CBZ`/`CBNZ`/`TBZ`/`TBNZ`; M5 adds `BC.<cond>`.
-  Do not compare that counter across families as if the definition
-  were stable.
-- **`MAP_LDST_UOP` includes GPR→vector converts and every insn shipped
-  to the SME engine** (they go through the store unit).
-- **`ST_NT_UOP` includes** SSVE/SME loads (store unit). **`LD_NT_UOP`
-  excludes** them.
-- **`INST_LDST` / `INST_INT_ST` do not count `DC ZVA`.**
-- M1–M4 exclusive-fail events can undercount when the line starts
-  Shared; LSE atomics count correctly. M5 both sides are correct.
-
-If a name is missing from the picker, it is not available on this chip.
-Skip it; do not substitute an encoding.
+Footnotes that change ratios (`INST_BRANCH_COND` def change,
+`MAP_LDST_UOP` includes SME, `ST_NT` includes SSVE loads, exclusives
+undercount M1–M4, `DECODE_UOP` accurate M5+, `LD_SRC_*` M5) live in
+`references/named-events.md`. Do not restate them here.
 
 ### Export / inspect
 
@@ -406,7 +396,7 @@ cycles go* start here.
 |---|------------------|-------------------|
 | Mechanism | Cycle PMI, independent per CPU | Wall-clock, simultaneous across CPUs |
 | Frequency / residency | Tracks the core that ran the code | **Not** adjusted for frequency or residency |
-| ISA / microarch | **Yes** — default for this skill | **No** — Guide Chapter 8 says so |
+| ISA / microarch | **Yes** — default for this skill | **No** — Time Profiler is not the ISA tool |
 | Use | Flows B, D, E, F; pattern scan | "What is the app doing?" overview only |
 
 ```bash
@@ -612,9 +602,11 @@ count; ignore layout suspects whose dual-profile absolute % Δ is below
 
 ### Step 1 — Atomic / exclusive fail density
 
-Open Guide **Table 8.1**. If this chip lists
-`ATOMIC_OR_EXCLUSIVE_FAIL` and `ATOMIC_OR_EXCLUSIVE_SUCC` (and
-`INST_ALL` / `ARM_INST_RETIRED`), pick them in CPU Counters.
+Pick names from `references/named-events.md` in the CPU Counters picker.
+If this chip's picker lists `ATOMIC_OR_EXCLUSIVE_FAIL` and
+`ATOMIC_OR_EXCLUSIVE_SUCC` (and `INST_ALL` / `ARM_INST_RETIRED`), select
+them. A missing picker name means the event is not on this chip — skip
+it. Do not invent encodings.
 
 Record once at 1 thread and once at `hw.logicalcpu` threads, **same QoS**:
 
@@ -633,9 +625,8 @@ fail density ≈ ATOMIC_OR_EXCLUSIVE_FAIL / INST_ALL
 ```
 
 A density that **rises** with thread count is contention. A density that
-is flat is not. On some families the exclusive (LDXR/STXR) side
-undercounts when the line starts Shared — atomics (LSE) count correctly.
-Read the Table 8.1 footnote; do not treat a zero exclusive-fail count as
+is flat is not. Exclusive-fail interpretation (M1–M4 undercount) is
+footnote 5 in `references/named-events.md` — do not treat a zero count as
 proof of no LDXR contention.
 
 If the events are absent from the picker, skip Step 1 and rely on
@@ -693,7 +684,7 @@ xcrun xctrace record --template 'System Trace' \
 
 # Points of Interest is already in the CPU Profiler template.
 # Thread Sanitizer: Xcode → Product → Scheme → Diagnostics → Thread Sanitizer
-# (Guide 8.3). TSan is a correctness tool; it is not a cycle profile.
+# (Xcode Thread Sanitizer). TSan is a correctness tool; it is not a cycle profile.
 ```
 
 ### Step 4 — Classify true vs false sharing
@@ -706,10 +697,10 @@ xcrun xctrace record --template 'System Trace' \
   **false sharing**.
 
 Cross-cluster modified sharing is expensive: the fabric is on the order
-of **10×** intra-cluster Shared-LL latency (Guide 7.5 / Appendix A —
-look up the numbers; do not paste the table). Independent pools of data
-are fine across clusters; a hot atomic ping-ponging across clusters is
-not.
+of **10×** intra-cluster Shared-LL latency
+(`apple-silicon-codegen/references/latency-lookup.md` hierarchy ballpark).
+Independent pools of data are fine across clusters; a hot atomic
+ping-ponging across clusters is not.
 
 ### Step 5 — Format
 
@@ -1036,8 +1027,8 @@ Function names containing `lock`, `spin`, `try_lock`.
 `cas` with no visible retry.
 
 **Suggested RS:** TTAS **and** block-not-spin (`patterns/ttas.md`,
-`patterns/spin-wait.md`). Guide 7.3: block idle threads; spin only for
-waits on the order of a thread-switch.
+`patterns/spin-wait.md`). Block idle threads; spin only for waits on
+the order of a thread-switch.
 
 #### Pattern 6: Memory load pressure
 
@@ -1130,9 +1121,10 @@ for `__attribute__((cold))` / `[[gnu::cold]]`.
 
 Intel `BR_INST_RETIRED.NEAR_TAKEN` does **not** exist here. Use Clang
 PGO, a CSV export, or sample-density on the branch vs fall-through from
-CPU Profiler. Confirm branch-mispredict event *names* in Guide Table 8.1
-and pick them in CPU Counters if you need a Discarded-side cross-check
-(`BRANCH_COND_MISPRED_NONSPEC`, `INST_BRANCH_TAKEN`, …).
+CPU Profiler. Pick branch-mispredict names from `references/named-events.md`
+in the CPU Counters picker if you need a Discarded-side cross-check
+(`BRANCH_COND_MISPRED_NONSPEC`, `INST_BRANCH_TAKEN`, …). A missing picker
+name means the event is not on this chip — skip it. Do not invent encodings.
 
 ### Automated procedure
 
@@ -1184,10 +1176,11 @@ Then run `tools/branchprob.py --profdata default.profdata source.c`.
 
 **Counters cross-check (no encodings):**
 
-Open Guide Chapter 8 Table 8.1. In the CPU Counters picker, select the
-branch-mispredict / taken-branch names this chip lists. A high Discarded
-fraction in Flow A plus a near-50% PGO taken% on a hot `b.cond` is the
-CSEL candidate.
+Pick names from `references/named-events.md` in the CPU Counters picker.
+Select the branch-mispredict / taken-branch names this chip lists. A
+missing picker name means the event is not on this chip — skip it. Do
+not invent encodings. A high Discarded fraction in Flow A plus a
+near-50% PGO taken% on a hot `b.cond` is the CSEL candidate.
 
 **CPU Profiler sample density:** if PGO is unavailable, `--from-annotate`
 lists every `b.<cond>` / `cbz` / `tbz`. Compare CPU Profiler samples on

@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Flow A: execution steps — CPU Bottlenecks / CPU Counters
 
@@ -46,32 +44,28 @@ Do not compare a 50 ms run to a 20 s run.
 ## Phase 2 — Read the four fractions
 
 From the CPU Bottlenecks track (GUI) or `xctrace show` / `toc` (CLI),
-fill:
+fill Useful / Discarded / Delivery / Processing. Full definitions, deeper
+Delivery/Processing rows (I-cache, I-TLB, Critical L1D miss while
+executing, Critical L1D miss, Execution latency, SME engine track), and
+family caveats live in `references/named-events.md` — do not restate them
+here.
 
-| Fraction | What it is (paraphrase of Guide 8.1.1) |
-|----------|----------------------------------------|
-| **Useful** | Retired work: measured μPC / **max μPC for this core type**. High means the pipeline is busy with correct-path work. |
-| **Discarded** | Bandwidth wasted on the wrong predicted path, plus recovery. Mispredicts and pipeline restarts. |
-| **Delivery** | Instruction Delivery could not keep the processing window full (I-cache, I-TLB, taken-branch density, short sequential streams). |
-| **Processing** | The window is full: execution is slower than sustainable bandwidth (ILP, memory, long-latency chains). |
+Fill only rows the recording actually produced:
 
-Deeper modes (chip-dependent; offered on newer families — use them if
-Instruments shows them, skip if not):
+| Fraction / row | What to record |
+|----------------|----------------|
+| **Useful** | μPC / max μPC for this core type |
+| **Discarded** | mispredict / restart waste |
+| **Delivery** | fetch could not fill the window |
+| **Processing** | window full (ILP or memory) |
+| Delivery from I-cache / I-TLB | if Instruments shows them (M3+) |
+| **Critical L1D miss while executing** | oldest LD/ST is L1D miss, still issuing |
+| **Critical L1D miss** | oldest LD/ST is L1D miss, nothing issued |
+| Execution latency / Non-critical L1D miss / SME engine | if shown → SME engine track means Flow F |
 
-| Deeper row | Meaning |
-|------------|---------|
-| Delivery latency / from I-cache / from I-TLB | Fetch misses. Locality of hot functions and pages. |
-| Delivery bandwidth | Too many taken branches, calls, returns — streams shorter than the fetch width. |
-| Executing | Doing some work, but not enough parallelism to fill the core. |
-| **Critical L1D miss while executing** | Oldest load/store is an L1D miss, **and** the core still found a μop to run. |
-| **Critical L1D miss** | Oldest load/store is an L1D miss, and **nothing** issued. |
-| Non-critical L1D miss | Younger load missed; not the oldest. |
-| Execution latency | Nothing issued; critical path is compute (or L1D-hitting loads). |
-| SME engine track | Workload used the engine; more modes may be available → Flow F. |
-
-**Memory-bound** on Apple Silicon is the **sum** of Critical L1D miss
-while executing **and** Critical L1D miss — not a Linux
-`cache-misses/refs` ratio, and not raw IPC.
+**Memory-bound** is the **sum** of Critical L1D miss while executing
+**and** Critical L1D miss — not a Linux `cache-misses/refs` ratio, and
+not raw IPC.
 
 ---
 
@@ -97,14 +91,11 @@ while running faster.
 | **No single dominant fraction** | Mixed. | Report the raw numbers and continue to Flow B. |
 | **Useful high, miss rows low, Discarded low, still slow** | Algorithm. | `patterns/platform-libs-first.md` first (Accelerate/vDSP/BLAS). Then parallel-accumulator / simd-upconversion / codegen. |
 
-When using named branch events, **`INST_BRANCH_COND` is not the same
-counter across families** (M3: `B.<cond>` only; M4 adds CBZ/TBZ; M5 adds
-`BC.<cond>`). Do not compare it M3 vs M5 as a mix-density. Details:
-`building-blocks.md`.
-
-Discarded on M4+ / A18+ is accounted more accurately than on earlier
-families; the same source may show a **larger** Discarded fraction on M4
-than on M3. Do not panic-compare across families.
+When using named branch events, pick names from `references/named-events.md`
+in the CPU Counters picker. A missing picker name means the event is not
+on this chip — skip it. Do not invent encodings. Do not compare
+`INST_BRANCH_COND` or Discarded fractions across families — footnotes in
+that file.
 
 ---
 

@@ -1,13 +1,11 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: never hardcode cache/page/core/ISA constants
 
 ## When to apply
 
 Apply whenever source contains a **magic 64**, **4096**, **8 cores**,
-or `#ifdef __ARM_FEATURE_SME` treated as “this Mac has SME” (Guide
-rec 66, High / Low). Apple silicon today is **128-byte** cache lines
+or `#ifdef __ARM_FEATURE_SME` treated as “this Mac has SME” (rec
+66, High / Low). Apple silicon today is **128-byte** cache lines
 and **16 KiB** pages; core counts and ISA features vary by SKU. Query
 `sysctl`. Do not compile for “Armv8.5” and assume the chip matches.
 
@@ -138,8 +136,9 @@ sysctl hw.cachelinesize hw.pagesize hw.logicalcpu hw.nperflevels \
 
 `perflevel0` is the **fastest** core type. Cache sizes used for
 blocking come from `hw.perflevel{N}.*`, not from a comment that says
-“M1 L1D is …”. Open Guide Appendix B and `sysctl -d hw.perflevel0`
-rather than pasting a per-chip table.
+“M1 L1D is …”. See `apple-silicon-codegen/references/sysctl.md` and
+`chip-families.md`, and `sysctl -d hw.perflevel0`, rather than pasting a
+per-chip table.
 
 ### 2. Compile for a chip, not an Arm version
 
@@ -211,5 +210,6 @@ size_t pad = hw.cacheline;   /* 128 today */
    `-mcpu=apple-m*` flag.
 3. Mention Rosetta, SSBS (do not clear), and MOPS-not-on-M5 in one
    sentence each so they do not get re-introduced.
-4. Point at Appendix B of the Guide for the full parameter list —
-   do not paste chip-family numeric tables into the repo.
+4. Point at `apple-silicon-codegen/references/sysctl.md` and
+   `chip-families.md` for the full parameter list — do not paste
+   chip-family numeric tables into the repo.

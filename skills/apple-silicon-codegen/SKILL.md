@@ -1,22 +1,19 @@
 ---
 name: apple-silicon-codegen
 description: >-
-  Write new Apple Silicon AArch64 / NEON / ASIMD / SME / SSVE code correctly
-  from the CPU Optimization Guide (Ch. 2–7 + App. A/B). Trigger on: writing
-  NEON/ASIMD/SME/SSVE, arm_neon.h, simd.h, FMOPA, SMSTART, ZA,
-  -mcpu=apple-m1/m2/m3/m4/m5, sysctl hw.optional.arm, GPR to vector, CSEL,
+  Write new Apple Silicon AArch64 / NEON / ASIMD / SME / SSVE code correctly.
+  Trigger on: writing NEON/ASIMD/SME/SSVE, arm_neon.h, simd.h, FMOPA, SMSTART,
+  ZA, -mcpu=apple-m1/m2/m3/m4/m5, sysctl hw.optional.arm, GPR to vector, CSEL,
   FMLA, cache line 128, 16KiB pages, QoS, GCD, Accelerate, vDSP, memcpy, MTE,
   weak memory, DMB, LDAR, STLR, LSE, LDADD, PAC, arm64e, ptrauth, DIT,
   timingsafe, X18, red zone, va_list, new SIMD kernel, assembly AArch64,
   Apple Silicon optimization while writing code. If the user is profiling, defer
   to apple-silicon-profile. If reviewing existing hot code for a named
   anti-pattern, defer to performance-patterns. This skill owns writing NEW code
-  correctly from Guide Ch 2–7 + App A/B.
+  correctly.
 ---
 
-<!-- Structure inspired by Intel Performance Skills (MIT, 2026).
-     Content is original agent instructions paraphrasing Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Apple Silicon codegen
 
@@ -40,7 +37,7 @@ After the kernel compiles, verify with `apple-silicon-profile` (CPU Bottlenecks
 
 ---
 
-## Optimization process order (Guide 1.2)
+## Optimization process order
 
 Pursue opportunities in this order. Skipping a step to jump to assembly is a
 bug in the agent, not an optimization.
@@ -54,6 +51,7 @@ bug in the agent, not an optimization.
    accepts. `-Ofast` / `-ffast-math` reassociate FP and enable FMLA; they change
    numerics (no Inf/NaN contract). Use them only when the caller accepts that.
    Consider PGO and LTO after the kernel is correct.
+   Family aliases and `apple-latest` danger: `references/chip-families.md`.
 3. **Platform libraries (rec 2, High/High).** Accelerate, vDSP, BLAS, LAPACK,
    vImage, vForce, BNNS, `simd`, Compression, Apple Archive, GCD, `memcpy`.
    Call a tuned library before writing NEON. → `references/integer-isa.md`
@@ -67,12 +65,13 @@ bug in the agent, not an optimization.
    needed instruction. SME/SSVE for matrix/outer-product tiles.
    → `references/asimd.md`, `references/sme-ssve.md`
 7. **Cache blocking and access patterns.** Block to L1D and Shared LL sizes
-   from `sysctl` (never M Cache). → `references/core-microarch.md`
+   from `sysctl` (never M Cache, never PL2). → `references/core-microarch.md`
 8. **Microarchitecture polish.** CSEL, taken-branch density, GPR↔vector,
    STLF, prefetch. Then SME engine isolation / fusion if ZA is in play.
    → `references/core-microarch.md`, `references/sme-engine.md`
-9. **Look up the mnemonic's class** in Guide Appendix A for the current chip
-   before picking an unroll factor. → `references/latency-lookup.md`
+9. **Class latency for unroll.** Recurring inner-loop op → its class in
+   `references/latency-lookup.md`. Unroll ≈ latency / throughput on **this**
+   S/P/E. Floor, then measure.
 
 ---
 
@@ -84,16 +83,17 @@ cross-links for one-home facts.
 | Writing this | Load |
 |--------------|------|
 | Any new kernel (always) | This `SKILL.md` (process order) |
+| Which family / S vs P vs E / ISA ladder / SME-8 vs SME-2 | `references/chip-families.md` |
 | Platform-lib vs custom, `-mcpu`, ABI (X18/X29, Apple type sizes, variadics), DIT, PAC/`ptrauth.h`/`arm64e`, addressing, constants, weak memory, MTE ISA, JIT | `references/integer-isa.md` |
 | NEON / ASIMD / `arm_neon.h` / `simd.h` / FMLA / LD2–4 / horizontal reduce | `references/asimd.md` |
 | `SMSTART`, ZA, `FMOPA`, SSVE Z/P, SVL, `arm_sme.h` | `references/sme-ssve.md` |
 | I-cache / branches / CSEL / GPR↔vector / cache-block / 128 B false sharing / memcpy / prefetch / STLF | `references/core-microarch.md` |
-| Core↔engine bounce, 4 KiB isolation, SME-8, packing fusion, ZA extract | `references/sme-engine.md` |
+| Core↔engine bounce, 4 KiB isolation, SME-8, packing fusion, ZA extract, LUTI/ZIP pairs | `references/sme-engine.md` |
 | Threads, QoS, GCD, XPC/launchd `ProcessType`, spin-wait, LSE atomics, cross-cluster sharing | `references/amp.md` |
 | `sysctlbyname`, `FEAT_*`, cache/page/line sizes, perflevels | `references/sysctl.md` |
-| Instruction latency / bandwidth / unroll ≈ latency/throughput | `references/latency-lookup.md` |
+| Instruction class latency / bandwidth / unroll ≈ latency/throughput | `references/latency-lookup.md` |
 
-### Recommendation homes (Guide 5.0 boxed recs 1–66)
+### Recommendation homes (recs 1–66)
 
 Each rec lives in **exactly one** file. Cross-link; do not restate the full
 rule in a second file.
@@ -109,17 +109,20 @@ rule in a second file.
 | 59–65 | `references/amp.md` |
 | 66 | `references/sysctl.md` |
 
-Appendix A has no boxed rec of its own except rec 65 (LSE atomics), which
-lives in `amp.md`. `latency-lookup.md` is the **how to use** the tables, not
-a copy of them.
+`latency-lookup.md` is the class-latency book. `chip-families.md` is family
+aliases, ISA ladder, S/P/E why, SME-8 vs SME-2. PMU names live in
+`apple-silicon-profile/references/named-events.md`.
 
 ---
 
 ## Non-negotiable platform facts
 
 - Target `-mcpu=apple-mN`, not `-march=armv8.x`. `apple-latest` is dangerous
-  (Guide 2.2). Details: `references/integer-isa.md`.
-- Query ISA and cache sizes at runtime. Details: `references/sysctl.md`.
+  (`chip-families.md`).
+- Query ISA and cache sizes at runtime (`sysctl.md`). ISA ladder:
+  `chip-families.md`. **No `FEAT_MOPS` on M5.** **SSBS is M1–M3 only** — do
+  not clear `PSTATE.SSBS=0` for speed. No `FEAT_SVE`/`SVE2`. No
+  `FEAT_SME_FA64`.
 - Coherence / false-sharing line is **128 B** (`hw.cachelinesize`). L1I / L1D /
   PL2 **fill** line is 64 B. Pages are **16 KiB** (`hw.pagesize`); `ADRP` still
   uses a 4 KiB architectural page.
@@ -131,19 +134,22 @@ a copy of them.
   SSVE-only is rarely a win versus 4-wide ASIMD on the core.
 - No SMT. Cannot pin a thread to S vs P vs E; QoS is a hint.
 - Do not bounce dependent data core ↔ SME engine (~20 cycles transit each
-  way; engine trails by tens to thousands of cycles).
+  way; engine trails by tens to thousands of cycles). Rec 58 VGx `MOVA`
+  uses **W8–W11**; tile-slice movement uses **W12–W15**.
 - Bandwidths in decimal SI (`MB/s`); sizes in binary (`KiB`/`MiB`).
   `sysctl` cache keys are bytes.
 - An Mx family is Mx + Pro + Max + Ultra. Dispatch on `hw.perflevel{N}.*`,
-  not on a SKU name.
+  not on a SKU name. M5 P is **not** M4 P (`chip-families.md`).
 
 ## Width / compute ladder
 
 1. Scalar C with ≥4 independent accumulators and `restrict`.
 2. ASIMD 128-bit, ≤~25 live of 32 V-regs, FMLA, loads into V not X.
-3. If the algorithm is a large-tile matrix / outer product / batched dot:
-   SME ZA + Processing Grid, SSVE as staging. Isolate 4 KiB. Target SME-8.
+3. If `FEAT_SME=1` **and** the algorithm is a large-tile matrix / outer
+   product / batched dot: SME ZA + Processing Grid, SSVE as staging.
+   Isolate 4 KiB. Target SME-8. Tiles that still fit in **L1D** can be
+   faster as core ASIMD.
 4. If the algorithm cannot use the grid: stay on core ASIMD.
 
-Open Guide Appendix A for the chip before choosing unroll. Open
-`hw.optional.arm.FEAT_*` before emitting SME / I8MM / BF16 / MTE.
+Unroll from `latency-lookup.md`. Query `hw.optional.arm.FEAT_*` before
+emitting SME / I8MM / BF16 / MTE.

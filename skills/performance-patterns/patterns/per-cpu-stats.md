@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern: shared statistics counter → per-thread / per-group aggregation
 
@@ -52,7 +50,7 @@ Apply in order of preference:
 Prefer sharding associated with **thread groups** (GCD queue, worker pool
 index, `pthread_t` slot). Core-index sharding is a last resort:
 `pthread_cpu_number_np` is a heuristic and the thread **may migrate**
-(Guide 7.5).
+(rec 63).
 
 When multiple counters update in the same loop, A and B still win: A flushes
 all of them in one block; B indexes the bucket once.

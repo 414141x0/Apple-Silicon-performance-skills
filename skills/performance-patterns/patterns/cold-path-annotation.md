@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern: cold-path annotation
 
@@ -17,9 +15,9 @@ The benefit is **indirect**: the cold function itself does not speed up. The
 caller gets faster because its hot-path instructions are no longer interleaved
 with rarely-executed cold-path instructions.
 
-Guide 5.4.2: keep hot portions of functions in a small set of cache lines.
+Rec 20: keep hot portions of functions in a small set of cache lines.
 Pages are **16 KiB**; L1I set conflicts are more likely for page-aligned
-dylibs. Do **not** NOP-align branch targets (Guide rec 22) as a substitute
+dylibs. Do **not** NOP-align branch targets (rec 22) as a substitute
 for this annotation.
 
 ### When is a callee cold?
@@ -72,7 +70,7 @@ emit a branch sequence the CPU's static predictor recognizes as "almost never
 taken."
 
 On 16 KiB pages, a page-aligned dylib can land many functions in the same L1I
-sets (Guide 5.4.2). Pulling cold code out of the hot function's lines is the
+sets (rec 20). Pulling cold code out of the hot function's lines is the
 layout lever you actually have; NOP-padding branch targets is not.
 
 ---

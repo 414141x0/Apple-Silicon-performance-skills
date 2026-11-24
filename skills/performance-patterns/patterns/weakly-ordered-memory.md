@@ -1,19 +1,17 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: weakly-ordered memory (not TSO)
 
 ## When to apply
 
 Apply whenever two threads (or a thread and a signal/interrupt-style
 callback) communicate through **plain stores and loads** of a flag plus
-payload (Guide rec 7, High / Low). Apple silicon is **weakly ordered**.
+payload (rec 7, High / Low). Apple silicon is **weakly ordered**.
 It is not x86 TSO. A store to `payload` followed by a store to `ready`
 may become visible in the opposite order.
 
 Also apply when a custom lock or counter is built from `LDXR`/`STXR`
 instead of LSE (`CAS`, `LDADD`, …) (rec 65), and whenever TSan is not
-part of the test plan (Guide 8.3 / rec 64).
+part of the test plan (rec 64).
 
 ### Source code signals
 
@@ -192,4 +190,4 @@ the fix, not an optional extra.
    `atomic_load_explicit(..., acquire)`.
 3. Show the C11 pair and, if they are in asm, `STLR`/`LDAR`.
 4. Replace any `LDXR`/`STXR` loop with LSE / C11 atomics.
-5. Insist on a TSan run (Guide 8.3) before calling the race fixed.
+5. Insist on a TSan run (rec 64) before calling the race fixed.

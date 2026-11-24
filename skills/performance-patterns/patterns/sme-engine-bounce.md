@@ -1,12 +1,10 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: core ↔ SME engine bounce
 
 ## When to apply
 
 Apply when a kernel uses **Streaming SVE / SME** and then immediately
-depends on the result on the **core** (or the reverse) (Guide recs 17,
+depends on the result on the **core** (or the reverse) (recs 17,
 50–58). This file is the *anti-pattern*: bouncing dependent data across
 the ~20-cycle transit, mixing core ASIMD with ZA on one chain, ping-pong
 buffers that alias the same 4 KiB page, unaligned engine stores, and
@@ -19,8 +17,8 @@ The full instruction playbook — ZA tiles, SSVE staging, fusion sequences
 - `../../apple-silicon-codegen/references/sme-engine.md`
 - `../../apple-silicon-codegen/references/sme-ssve.md`
 
-Do **not** copy fusion tables into a patch. Open the Guide’s engine
-chapter and the codegen refs for mnemonics.
+Do **not** copy fusion tables into a patch. Use the codegen refs for
+mnemonics.
 
 ### Source code signals
 
@@ -196,8 +194,8 @@ the inner loop.
 
 ### 3. Cover grid latency with the whole ZA
 
-Nominal grid accumulate latency is ~4 cycles (Guide 6.3; Appendix A for
-the chip). Unroll and occupy **as many ZA tiles/vectors as the ISA lets
+Nominal grid accumulate latency is ~4 cycles (rec 53;
+`apple-silicon-codegen/references/latency-lookup.md`). Unroll and occupy **as many ZA tiles/vectors as the ISA lets
 you** so independent FMOPA/FMLA hide that latency. One live accumulator
 in ZA is the engine analogue of a serial scalar `sum +=`.
 
@@ -236,7 +234,7 @@ the engine LSU talks to Shared LL, not L1D. See `platform-libs-first.md`
    rises; SM enable count is once per tile, not once per vector.
 4. **Correctness** — compare against a core ASIMD reference. Do not
    require bit-identity with a fused vs unfused core path.
-5. Open codegen `sme-engine.md` / `sme-ssve.md` (and Guide ch. 6) for
+5. Open codegen `sme-engine.md` / `sme-ssve.md` for
    fusion sequences rather than inventing a LUTI chain here.
 
 ---

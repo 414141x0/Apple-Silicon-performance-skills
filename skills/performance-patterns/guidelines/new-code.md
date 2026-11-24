@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Guidelines: writing new performance-sensitive code
 
@@ -9,10 +7,10 @@ matters on Apple silicon. Apply these before writing the first line — they are
 far cheaper to get right upfront than to retrofit later.
 
 Each item links to the full pattern file for rationale and code templates.
-Order follows Guide §1.2 / high-impact recommendations.
+Order follows codegen SKILL.md process order.
 
-ISA catalogs, preferred mnemonics, and Appendix A latencies: use
-`apple-silicon-codegen`. Do not duplicate them here.
+ISA catalogs, preferred mnemonics, and class latencies: use
+`apple-silicon-codegen` (`references/latency-lookup.md`). Do not duplicate them here.
 
 ---
 
@@ -44,7 +42,7 @@ ISA catalogs, preferred mnemonics, and Appendix A latencies: use
 ### 4. 128 B layout
 
 - [ ] **Pad independent writers to 128 B; pack hot fields onto the fewest lines.**
-  False sharing is a 128-byte problem. The dual is Guide rec 38: group
+  False sharing is a 128-byte problem. The dual is rec 38: group
   same-thread hot fields so they share a line.
   → `patterns/false-sharing.md`
 

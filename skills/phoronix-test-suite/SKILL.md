@@ -3,9 +3,7 @@ name: phoronix-test-suite
 description: Install, run, parse, and optimize benchmarks from the Phoronix Test Suite (PTS). Use this skill whenever the user mentions "phoronix", "pts/", or "phoronix-test-suite", or asks to run, measure, improve, or optimize a PTS test — e.g., "run pts/mt-dgemm", "optimize pts/compress-zstd", "what score does pts/x265 get". Trigger immediately on any `pts/<testname>` reference, even if the user doesn't explicitly say "phoronix". Also trigger when the user asks to find or edit the source code of a PTS test.
 ---
 
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Phoronix Test Suite skill
 

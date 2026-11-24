@@ -1,13 +1,11 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: software prefetch last (PRFM sparingly)
 
 ## When to apply
 
 Apply when a memory-bound kernel has **`PRFM` / `__builtin_prefetch`
 sprinkled through the inner loop**, or when someone wants to add them
-before the access pattern is sequential or blocked (Guide recs 47–48).
+before the access pattern is sequential or blocked (recs 47–48).
 
 The order is:
 
@@ -195,5 +193,5 @@ stream.
    line sketch and insist on an A/B.
 4. Do not quote a “prefetch 16 lines ahead” number from a blog. The
    hardware prefetcher exists because that number is core-type
-   dependent; Appendix A / Guide 5.6.13 for this chip if you must
-   tune one.
+   dependent; `apple-silicon-codegen/references/latency-lookup.md`
+   (rec 47) for this chip if you must tune one.

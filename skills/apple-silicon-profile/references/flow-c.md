@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Flow C: execution steps — contention (no `perf c2c`)
 
@@ -12,16 +10,19 @@ are:
 
 1. Dual-profile jumpers (1 thread vs `hw.logicalcpu`, same QoS)
 2. `ATOMIC_OR_EXCLUSIVE_FAIL` density if the CPU Counters picker offers
-   it (Guide Table 8.1 — do not invent encodings)
+   it (`references/named-events.md` — pick names from that file. A missing
+   picker name means the event is not on this chip — skip it. Do not
+   invent encodings)
 3. 128 B layout inspection of hot structs
 4. System Trace / Points of Interest (blocking, migration)
-5. Xcode Thread Sanitizer (Guide 8.3) for *correctness* of the sharing,
+5. Xcode Thread Sanitizer for *correctness* of the sharing,
    not for cycle attribution
 
 Cross-cluster modified sharing is expensive: the fabric is on the order
-of **10×** intra-cluster Shared-LL latency (Guide 7.5; look up Appendix A
-for the numbers — do not paste the table). Independent data pools across
-clusters are fine; a hot atomic bouncing across clusters is not.
+of **10×** intra-cluster Shared-LL latency
+(`apple-silicon-codegen/references/latency-lookup.md` hierarchy ballpark).
+Independent data pools across clusters are fine; a hot atomic bouncing
+across clusters is not.
 
 ---
 
@@ -271,7 +272,7 @@ same datum → **true sharing**.
 rather than plain data contention. Every waiter competes for exclusive
 ownership of the line, including threads that currently have no chance
 of acquiring the lock — which also steals the line from the holder.
-Apply **TTAS** (`patterns/ttas.md`) **and** Guide 7.3 **block-not-spin**
+Apply **TTAS** (`patterns/ttas.md`) **and** **block-not-spin**
 (`patterns/spin-wait.md`) before considering other strategies. Prefer
 `os_unfair_lock`, GCD, pthreads — they are tuned per chip. Home-grown
 queued locks are not.

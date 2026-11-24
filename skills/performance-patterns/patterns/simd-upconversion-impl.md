@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # SIMD width-ladder — implementation guide
 
@@ -9,7 +7,8 @@ opportunity is identified. This is the promotion algorithm: scalar →
 ASIMD 128 (map each scalar op to a lane), then SME vs. more ASIMD ILP.
 Dispatch: `library/cpu-dispatch.md`.
 
-ISA catalogs and Appendix A latencies: `apple-silicon-codegen`.
+ISA catalogs and class latencies: `apple-silicon-codegen`
+(`references/latency-lookup.md`).
 
 ---
 
@@ -98,7 +97,7 @@ ASIMD:      S0 = vaddq_f32(S0, vld1q_f32(a+i));
 ```
 
 Each scalar add maps to one lane of a vector add; four independent vectors
-hide FMLA latency (~4 cycles, Appendix A).
+hide FMLA latency (~4 cycles, `apple-silicon-codegen/references/latency-lookup.md`).
 
 ### Step 5 — Fuse mul+add
 
@@ -174,7 +173,7 @@ core vector unit.
 
 Only when Stage 2 selected the grid.
 
-Rules (Guide ch. 4 and 6):
+Rules (`apple-silicon-codegen` `sme-ssve.md` / `sme-engine.md`; recs 17–18, 50–58):
 
 - Target **ZA + Processing Grid**. SSVE supports; it is not the throughput
   path.

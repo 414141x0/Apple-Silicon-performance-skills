@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Flow B: execution steps — CPU Profiler hotspots
 
@@ -137,8 +135,9 @@ using Part 5 of `SKILL.md` (invoke `performance-patterns`).
 ### Vectorization verification (picker, not encodings)
 
 After a SIMD fix (upconversion, accumulator rewrite, or SME kernel),
-verify with CPU Counters. Open Guide **Table 8.1** and pick, if present
-on this chip:
+verify with CPU Counters. Pick names from `references/named-events.md`
+in the CPU Counters picker. A missing picker name means the event is not
+on this chip — skip it. Do not invent encodings. If present:
 
 - ASIMD compute: `INST_SIMD_ALU` / `INST_SIMD_ALU_VEC`
 - SME grid: `INST_SME_ENGINE_ALU` (and LD/ST if you care about traffic)

@@ -1,12 +1,10 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: AMP work partition (QoS + dynamic queues)
 
 ## When to apply
 
 Apply when a parallel workload on Apple silicon **finishes late**, **leaves
-E cores idle**, or **pins the wrong work on P cores** (Guide recs 59–60).
+E cores idle**, or **pins the wrong work on P cores** (recs 59–60).
 You cannot pin a thread to “the P cores” or “the E cores”. The OS picks
 the core type from **QoS hints** and from how much runnable work exists.
 

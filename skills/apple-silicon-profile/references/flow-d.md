@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Flow D: execution steps — AMP scaling (S / P / E, QoS)
 
@@ -229,8 +227,9 @@ the jumper functions from Phase 2. This replaces "focused c2c".
 
 ### 3a. Collect fail density + layout
 
-ATOMIC_OR_EXCLUSIVE_* if the picker has them (Guide Table 8.1). 128 B
-layout dump of every struct the jumpers touch.
+ATOMIC_OR_EXCLUSIVE_* if the picker has them (`references/named-events.md`).
+A missing picker name means the event is not on this chip — skip it. Do
+not invent encodings. 128 B layout dump of every struct the jumpers touch.
 
 ### 3b. Filter to jumping functions
 
@@ -264,12 +263,12 @@ For each jumping function and its associated hot line (if any), classify:
 | Pattern | Signals | Resolution strategy |
 |---------|---------|---------------------|
 | **False sharing** | Jumper writes one field; another thread writes a different field on the same **128 B** line | `patterns/false-sharing.md` |
-| **TAS / CAS spin** | `ldxr`/`stxr` or `cas` retry in a loop; names contain `lock`/`spin`/`try_lock`. LSE **fail density** rises with N. Annotate pattern scan will name it. | `patterns/ttas.md` **and** `patterns/spin-wait.md`. Guide 7.3: **block, don't spin** except sub-scheduling-quantum waits. Prefer `os_unfair_lock` / GCD / pthreads. |
+| **TAS / CAS spin** | `ldxr`/`stxr` or `cas` retry in a loop; names contain `lock`/`spin`/`try_lock`. LSE **fail density** rises with N. Annotate pattern scan will name it. | `patterns/ttas.md` **and** `patterns/spin-wait.md`. **Block, don't spin** except sub-scheduling-quantum waits. Prefer `os_unfair_lock` / GCD / pthreads. |
 | **True sharing — statistics** | Contended field is a counter (`ldadd`, `++`); no compare-exchange loop | `patterns/per-cpu-stats.md` |
 | **True sharing — data** | Contended field is genuine shared data | Atomics (LSE), finer locks, GCD serial queue, R/W. See Flow C. |
 | **AMP static partition** | `#pragma omp for schedule(static)`, equal chunks, one barrier per phase; scaling dies between P and N; BACKGROUND QoS is much slower at same T | `patterns/amp-work-partition.md`. Dynamic queues, GCD, **≥ 3× tasks per core**. |
 | **QoS / E-core parking** | UI vs BG at same T differs a lot; occupancy (if recorded) sits on perflevel1 | Set QoS on the hot path (`pthread_set_qos_class_self_np` / GCD QoS). Do not spin waiting for a P-core. |
-| **Cross-cluster sharing** | Thread count > cores in one cluster (`hw.perflevel{N}.cpusperl2`); modified data ping-pongs | Shrink shared modified working set; shard; pack without false sharing. Guide 7.5. |
+| **Cross-cluster sharing** | Thread count > cores in one cluster (`hw.perflevel{N}.cpusperl2`); modified data ping-pongs | Shrink shared modified working set; shard; pack without false sharing. Hierarchy ballpark (~10× intra-cluster): `apple-silicon-codegen/references/latency-lookup.md`. |
 | **No contention signal** | Function jumps but no fail-density / 128 B suspect | Flow B on that function (compute / branches / SME). |
 
 Document the diagnosis before applying any fix. If multiple jumpers fall

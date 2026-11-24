@@ -6,8 +6,9 @@ workflows for profiling with Instruments / `xctrace`, identifying performance
 anti-patterns in source code and profiling output, writing ASIMD / SSVE / SME
 kernels, and optimizing benchmarks from the Phoronix Test Suite.
 
-These skills are **not** affiliated with Apple or Intel. They do not redistribute the
-Apple Silicon CPU Optimization Guide. See [COPYRIGHT.md](COPYRIGHT.md).
+These skills are **not** affiliated with Apple or Intel. They are the
+agent knowledge base for Apple silicon CPU optimization. They do not
+redistribute Apple's CPU Optimization Guide. See [COPYRIGHT.md](COPYRIGHT.md).
 
 ## Example prompts
 
@@ -52,7 +53,7 @@ Once installed, you can talk to the agent naturally. A few examples:
 |-----------|---------|
 | `skills/apple-silicon-profile/` | Data collection skill: Instruments, `xctrace`, CPU Counters, CPU Bottlenecks, hotspot reporting |
 | `skills/performance-patterns/` | Pattern detection and fix playbooks: source code and profiling signals |
-| `skills/apple-silicon-codegen/` | Writing new integer / ASIMD / SSVE / SME kernels from Guide 5.0 rules |
+| `skills/apple-silicon-codegen/` | Writing new integer / ASIMD / SSVE / SME kernels (ISA, families, latencies, engine) |
 | `skills/phoronix-test-suite/` | Supporting skill: install, run, and optimize PTS benchmarks on native arm64 |
 
 ---
@@ -112,9 +113,9 @@ performance"*, *"improve throughput"*, *"write a fast…"*, any `vld1q` / `vfmaq
 
 ### `apple-silicon-codegen` — writing new kernels
 
-**Write new performance-sensitive integer, ASIMD, SSVE, and SME kernels** using the
-Apple Silicon CPU Optimization Guide 5.0 rules (ISA selection, addressing, register
-pressure, ZA + Processing Grid, 4 KiB isolation, sysctl constants). Also owns the
+**Write new performance-sensitive integer, ASIMD, SSVE, and SME kernels**
+(ISA selection, addressing, register pressure, ZA + Processing Grid, 4 KiB
+isolation, chip-family dispatch, class latencies, sysctl constants). Also owns the
 Apple ARM64 ABI (`X18`, `long double` == `double`, stack variadics), DIT
 (`<timingsafe.h>`), and PAC / `arm64e` / `ptrauth.h`. Invoke when the
 user asks to write a kernel, or when `performance-patterns` has ruled out a platform
@@ -277,6 +278,5 @@ Released under the [MIT License](COPYRIGHT.md). Copyright (c) 2026 the skill aut
 
 Directory layout and workflow structure are derived from Intel Corporation's
 "Intel Performance Skills" (MIT License, 2026). Optimization rules are original
-paraphrases of the Apple Silicon CPU Optimization Guide 5.0 (Apple Inc.,
-registered-developer material — the Guide itself is not redistributed here).
+agent instructions. Apple's CPU Optimization Guide is not redistributed here.
 This project does not claim Apple copyright on the skills.

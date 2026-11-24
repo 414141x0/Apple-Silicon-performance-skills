@@ -23,9 +23,9 @@ Output is a Markdown table on stdout for direct agent ingestion. Progress
 goes to stderr.
 
 Do NOT invent Apple PMU event encodings. For a Discarded / mispredict
-cross-check, open Apple Silicon CPU Optimization Guide 5.0 Chapter 8
-Table 8.1 and pick the branch-mispredict / taken-branch names in the
-Instruments CPU Counters picker.
+cross-check, pick names from references/named-events.md in the CPU
+Counters picker. A missing picker name means the event is not on this
+chip — skip it. Do not invent encodings.
 
 Collection recipe (also printed by --help):
 
@@ -36,7 +36,7 @@ Collection recipe (also printed by --help):
     python3 branchprob.py --profdata default.profdata --binary ./binary source.c
 
     # Counters cross-check (picker, no encodings):
-    #   Guide Table 8.1 → BRANCH_COND_MISPRED_NONSPEC, INST_BRANCH_TAKEN, …
+    #   named-events.md → BRANCH_COND_MISPRED_NONSPEC, INST_BRANCH_TAKEN, …
     #   plus Flow A Discarded fraction.
 
 A Taken% near 0% with enough samples marks the branch *target* as a
@@ -107,12 +107,14 @@ is CPU Profiler sample density on the branch vs fall-through, not the
 objdump text.
 
 CPU Counters (no encodings):
-    Open Guide Chapter 8 Table 8.1. In the Instruments CPU Counters
-    picker, select the branch-mispredict / taken-branch *names* this chip
-    lists (examples of picker labels, confirm before use:
-    BRANCH_COND_MISPRED_NONSPEC, INST_BRANCH_TAKEN, INST_BRANCH,
-    BRANCH_MISPRED_NONSPEC). A high Flow A Discarded fraction plus a
-    near-50% PGO Taken% on a hot b.cond is the CSEL candidate.
+    Pick names from references/named-events.md in the CPU Counters
+    picker. A missing picker name means the event is not on this chip —
+    skip it. Do not invent encodings. Select the branch-mispredict /
+    taken-branch *names* this chip lists (examples of picker labels,
+    confirm before use: BRANCH_COND_MISPRED_NONSPEC, INST_BRANCH_TAKEN,
+    INST_BRANCH, BRANCH_MISPRED_NONSPEC). A high Flow A Discarded
+    fraction plus a near-50% PGO Taken% on a hot b.cond is the CSEL
+    candidate.
 
 gccbranchprob.py is ISA-agnostic (GCC profile_estimate dumps). Use it
 when you cannot run the binary; use this tool when you can.
@@ -723,7 +725,7 @@ python3 tools/branchprob.py --csv branches.csv {source}
 #   xcrun llvm-profdata merge -o default.profdata default.profraw
 #   python3 tools/branchprob.py --profdata default.profdata --binary ./binary source.c
 
-# CPU Counters cross-check: Guide Chapter 8 Table 8.1 → picker names
+# CPU Counters cross-check: references/named-events.md → picker names
 # (BRANCH_COND_MISPRED_NONSPEC, INST_BRANCH_TAKEN, …). Do not invent encodings.
 """.strip()
 

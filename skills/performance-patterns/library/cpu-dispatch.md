@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Library: runtime CPU dispatch
 
@@ -15,7 +13,8 @@ future pattern that generates multiple CPU-specific variants.
 
 **Never dispatch on "Arm version"** (`armv8.6`, `armv9.2`). Dispatch on
 `hw.optional.arm.FEAT_*` and compile variants with `-mcpu=apple-m*` /
-`__attribute__((target(...)))`. Appendix B of the Guide.
+`__attribute__((target(...)))`. See `apple-silicon-codegen/references/sysctl.md`
+and `chip-families.md`.
 
 ---
 

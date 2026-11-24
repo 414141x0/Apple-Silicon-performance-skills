@@ -1,69 +1,143 @@
-<!-- Structure inspired by Intel Performance Skills (MIT, 2026).
-     Content is original agent instructions paraphrasing Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
-# sysctl: ISA and microarch constants (Guide Appendix B)
+# sysctl: ISA and microarch constants
 
-Owns rec **66**. This is the home of the feature table at **family**
-granularity (not Guide Table 2.1). Do not copy the M1 Ultra numeric example
-from the PDF. Show **how to query and print**.
+Owns rec **66**. Home of **how to query**, the compact family “from”
+table for dispatch, the legacy name map, and the C helpers. ISA ladder,
+family aliases, and S/P/E *why*: `chip-families.md`. PMU names:
+`named-events.md`.
 
-Hardcoded L1D sizes, page sizes, or `FEAT_SME == 1` will be wrong on the
-next chip (or on an E core vs a P core). Fetch them.
+Hardcoded L1D sizes, page sizes, core counts, or `FEAT_SME == 1` will be
+wrong on the next chip (or on an E core vs a P core). Fetch them.
 
-**Units (Guide 1.6):** bandwidths in **decimal** SI (`MB/s`, `GB/s`);
-sizes and footprints in **binary** prefixes (`KiB`, `MiB`). `sysctl`
-cache keys are **bytes**. Do not write “L1 is 128KB”.
+**Units:** bandwidths in **decimal** SI (`MB/s`, `GB/s`); sizes and
+footprints in **binary** prefixes (`KiB`, `MiB`). `sysctl` cache keys are
+**bytes**. Do not write “L1 is 128KB”. Line is 128 B; VM page is 16 KiB
+(query, do not assume). Architectural `ADRP` page is still 4 KiB —
+unrelated to `hw.pagesize`.
 
-**Mx family** = Mx + Pro + Max + Ultra (core *design* is shared; core
-counts, topology, and bandwidths differ). Dispatch on `hw.perflevel{N}.*`,
-not on a SKU name (`apple-m1-ultra` is not a `-mcpu`). Same idea for an
-Ax family (Ax / Bionic / Pro).
+An **Mx family** is Mx + Pro + Max + Ultra (core *design* is shared; core
+counts, topology, and bandwidths differ). Dispatch on `hw.perflevel{N}.*`
+and `hw.optional.arm.FEAT_*`, not on a SKU name (`apple-m1-ultra` is not a
+`-mcpu`). Same idea for an Ax family (Ax / Bionic / Pro).
 
 ---
 
 ## Rec 66 — Query sysctl for ISA and microarch constants (High/Low)
 
-Use `sysctlbyname(3)` in code and `sysctl -a` / `sysctl -d <name>` in the
-shell. Missing keys return `-1` with `errno == ENOENT` (feature not
-implemented). Present keys are `0` or `1` for `FEAT_*`, or a byte count /
-integer for topology.
+Hardcoded cache bytes, core counts, or “this FEAT is always on” break on
+the next SKU. Fetch ISA availability, worker counts, and cache sizes
+from the live system.
 
-`sysctl -d hw.pagesize` prints the C type; size the buffer accordingly.
-`ENOMEM` means your buffer was too small.
+Shell: `sysctl` / `sysctl -a` / `sysctl -d <name>`. `sysctl -a` lists
+everything on this chip; subsets include `hw`, `kern`, `user`,
+`machdep`. `sysctl -d <name>` prints the C type; size the buffer
+accordingly.
+
+Code: `sysctlbyname(const char *name, void *oldp, size_t *oldlenp,
+void *newp, size_t newlen)` reads `name` into `*oldp`. Failure: return
+`-1`, `errno` set. Missing name → `ENOENT`. Short buffer → `ENOMEM`.
+Pass `newp = NULL`, `newlen = 0` for a read.
+
+Example keys (values come from the live system, never from a baked
+dump): `hw.pagesize`, `hw.cachelinesize`, `hw.physicalcpu_max`
+(physical GPR cores), `hw.optional.arm.FEAT_DotProd`.
+
+`FEAT_*` present = **1**, absent = **0**, unimplemented name =
+`ENOENT`. Prefer `hw.optional.arm.FEAT_*` over legacy names.
+
+### Rosetta — `sysctl.proc_translated`
+
+`sysctlbyname("sysctl.proc_translated", …)` → **0** native, **1**
+translated, **-1** error. `ENOENT` (key missing) ⇒ treat as native.
+Translated processes are not Apple-Silicon PMU / SME paths. Helper
+below. Also see *Addressing Architectural Differences in Your macOS
+Code* on the Apple Developer site.
+
+---
+
+## ISA keys
+
+Apple silicon is A-profile AArch64 (Armv8 and follow-on Armv9 by
+generation). Compiled software already has a base ISA; dynamically
+checking “are we AArch64?” is generally unnecessary.
+
+### Base ISA
+
+| Key | Meaning |
+|-----|---------|
+| `hw.optional.arm64` | A-profile AArch64 Armv8/Armv9 |
+
+### Unofficial always-on names (M1 / A14+)
+
+These have **no official Arm `FEAT_*` name**. Parameters exist; they
+are present on all Apple silicon from M1 / A14 and do **not** need a
+runtime check in an Apple-Silicon-only binary.
+
+| Key | Meaning |
+|-----|---------|
+| `hw.optional.armv8_crc32` | CRC32 instructions |
+| `hw.optional.floatingpoint` | floating-point instructions |
+| `hw.optional.AdvSIMD` | Advanced SIMD |
+| `hw.optional.AdvSIMD_HPFPCvt` | Advanced SIMD half-precision convert |
+
+### Standardized `FEAT_*` keys
+
+Pattern: `hw.optional.arm.FEAT_<Name>`. Value **1** / **0** /
+`ENOENT`. Query before emitting an insn that is not on every
+deployment chip. Do not paste a feature matrix. Ladder *why* and
+agent actions: `chip-families.md`.
+
+Keys agents actually query:
+
+`hw.optional.arm.FEAT_DotProd`, `FEAT_LSE`, `FEAT_LSE2`, `FEAT_FP16`,
+`FEAT_FHM`, `FEAT_SHA512`, `FEAT_SHA3`, `FEAT_FCMA`, `FEAT_I8MM`,
+`FEAT_BF16`, `FEAT_BTI`, `FEAT_ECV`, `FEAT_AFP`, `FEAT_RPRES`,
+`FEAT_SME`, `FEAT_SME2`, `FEAT_WFxT`, `FEAT_MTE`, `FEAT_CSSC`,
+`FEAT_HBC`, `FEAT_DIT`, `FEAT_SB`, `FEAT_FlagM`, `FEAT_FlagM2`,
+`FEAT_FRINTTS`, `FEAT_JSCVT`, `FEAT_LRCPC`, `FEAT_LRCPC2`, `FEAT_RDM`,
+`FEAT_DPB`, `FEAT_DPB2`, `FEAT_AES`, `FEAT_SHA1`, `FEAT_SHA256`,
+`FEAT_PMULL`, `FEAT_EBF16`, `FEAT_SME2p1`. SME outer-product subfeats
+(`FEAT_SME_F32F32`, `FEAT_SME_F64F64`, `FEAT_SME_I16I64`, …) must be
+**queried**, not assumed from `FEAT_SME=1`.
+
+`FEAT_MOPS` and `FEAT_CMOW` are **not** on M5 (`ENOENT` or 0). Do not
+emit `CPY*`/`SET*` as the M5 memcpy path. `FEAT_SSBS` is M1–M3 only;
+do not clear `PSTATE.SSBS=0` for speed.
+
+E and P share ISA — one `FEAT_*` answer is enough. Cache sizes are
+**per perflevel**.
 
 ---
 
 ## Family “from” table (dispatch baseline, still query)
 
+Compact dispatch aid. ISA details: `chip-families.md`. Even on a
+“from” family, **query** before emitting.
+
+Always-on from M1/A14 (Apple-Silicon-only binary need not check;
+checking is harmless): ASIMD, CRC32, floating-point, AdvSIMD HPFP
+convert, FP16, LSE, LSE2, DotProd, AES, SHA1/256/3/512, PMULL, RDM,
+FCMA, FHM, FlagM/FlagM2, FRINTTS, JSCVT, LRCPC/LRCPC2, DIT, DPB/DPB2,
+SB.
+
 | Feature | From |
 |---------|------|
-| ASIMD, CRC32, PMULL, DotProd, FP16, LSE, SHA, AES | All M1 / A14+ |
-| BF16, I8MM, BTI | M2 / A15+ |
+| baseline above | All M1 / A14+ |
+| BF16, I8MM, BTI, ECV | M2 / A15+ |
 | AFP, RPRES | M3 / A16+ |
-| SME, SME2, WFxT | M4 / A18+ |
-| MTE, CSSC, HBC, SME2p1, SME F16F16/B16B16 | M5 / A19+ |
-| `FEAT_MOPS` | **Not** on M5 (explicitly excluded) |
-| SSBS | M1–M3 only; do not clear SSBS for speed |
+| SME, SME2, WFxT, SME outer-product subfeats | M4 / A18+ |
+| MTE, CSSC, HBC, SME2p1, SME F16F16/B16B16, SVE_B16B16, EBF16 | M5 / A19+ |
+| `FEAT_MOPS`, `FEAT_CMOW` | **Not** on M5 |
+| SSBS | M1–M3 only |
 | `FEAT_DIT`, `FEAT_SB` | query before crypto DIT fallback (`integer-isa.md`) |
-
-Even on a “from” family, **query** before emitting the instruction. E cores
-and P cores share ISA, so one `FEAT_*` answer is enough; cache sizes are
-**per perflevel**.
-
-Standardized names: `hw.optional.arm.FEAT_DotProd`, `FEAT_SME`,
-`FEAT_I8MM`, `FEAT_BF16`, `FEAT_MTE`, `FEAT_LSE`, `FEAT_WFxT`, …
-
-Always-on from M1/A14 (need not be checked in an Apple-Silicon-only
-binary, but checking is harmless): `hw.optional.arm64`,
-`hw.optional.AdvSIMD`, `hw.optional.floatingpoint`,
-`hw.optional.armv8_crc32`.
 
 ---
 
 ## Legacy vs standardized names
 
-Use the new names in new code.
+Legacy names remain for old software. **Use the new names** in new
+code. “NEON” is no longer Arm’s term.
 
 | Legacy | Use instead |
 |--------|-------------|
@@ -78,34 +152,65 @@ Use the new names in new code.
 
 ---
 
-## Topology and cache keys
+## Per-perflevel keys
 
-`perflevel0` = **fastest** cores (S, or P if there is no S). Higher
-`perflevel` numbers are slower types. `hw.nperflevels` is the count.
+`hw.nperflevels` = number of general-purpose core types. **Lower N =
+higher-performing type.** `perflevel0` is Super, or Performance if
+there is no S. Available macOS 12 / iOS 15 / iPadOS 15 and later.
+
+`l2cachesize` here is **Shared LL** (formerly Shared L2) — cluster
+last-level, not a private L2. **M Cache is not in this interface.** Do
+not block to it (rec 36, `core-microarch.md`). Private L2 exists on
+some S cores only; it is also not a sysctl blocking target.
+
+Query these. Do **not** paste a worked Ultra (or any SKU) numeric dump
+into a header.
 
 | Key | Meaning |
 |-----|---------|
 | `hw.nperflevels` | number of core types |
+| `hw.perflevel{N}.cpusperl2` | cores of type N that share a Shared LL (cluster width) |
+| `hw.perflevel{N}.l1dcachesize` | L1D bytes for type N |
+| `hw.perflevel{N}.l1icachesize` | L1I bytes for type N |
+| `hw.perflevel{N}.l2cachesize` | Shared LL bytes for type N |
+| `hw.perflevel{N}.logicalcpu` | **enabled** logical cores of type N |
+| `hw.perflevel{N}.logicalcpu_max` | logical cores of type N in the chip |
 | `hw.perflevel{N}.name` | `"Super"` / `"Performance"` / `"Efficiency"` |
-| `hw.perflevel{N}.logicalcpu` | enabled logical CPUs of that type |
-| `hw.perflevel{N}.physicalcpu` | enabled physical CPUs of that type |
-| `hw.perflevel{N}.l1dcachesize` | L1D bytes |
-| `hw.perflevel{N}.l1icachesize` | L1I bytes |
-| `hw.perflevel{N}.l2cachesize` | **Shared LL** bytes (legacy name) |
-| `hw.perflevel{N}.cpusperl2` | cores sharing that LL |
-| `hw.logicalcpu` / `hw.logicalcpu_max` | all types together |
-| `hw.physicalcpu` / `hw.physicalcpu_max` | physical cores |
-| `hw.cachelinesize` | coherence line (**128**) |
-| `hw.pagesize` | VM page (**16384**) |
-| `hw.l1dcachesize` etc. | **lowest-performing** cores (since macOS 12 / iOS 15) |
-
-Do **not** use the non-perflevel `hw.l1dcachesize` to block a P-core kernel.
-Do **not** look for an M Cache size; it is not in this interface and you
-must not block to it (rec 36, `core-microarch.md`).
+| `hw.perflevel{N}.physicalcpu` | **enabled** physical cores of type N |
+| `hw.perflevel{N}.physicalcpu_max` | physical cores of type N in the chip |
 
 ---
 
-## Original helpers
+## Updated existing (chip-wide) keys
+
+From macOS 12 / iOS 15 / iPadOS 15, unqualified cache sizes describe
+the **lowest-performing** cores. Older OSes reported the **boot core**
+(P or E). Do **not** block a P-core kernel to the unqualified L1D.
+
+| Key | Meaning |
+|-----|---------|
+| `hw.l1dcachesize` | L1D bytes of the **lowest-performing** cores |
+| `hw.l1icachesize` | L1I bytes of the **lowest-performing** cores |
+| `hw.l2cachesize` | Shared LL bytes of the **lowest-performing** cores |
+| `hw.cachelinesize` | system coherence line (**128**) |
+| `hw.memsize` | DRAM bytes |
+| `hw.pagesize` | VM page (**16384**) |
+| `hw.logicalcpu` | enabled logical cores, all types (alias of `hw.activecpu`) |
+| `hw.logicalcpu_max` | logical cores in the chip (alias of `hw.ncpu`) |
+| `hw.activecpu` | alias of `hw.logicalcpu` |
+| `hw.ncpu` | alias of `hw.logicalcpu_max` |
+| `hw.physicalcpu` | enabled physical cores, all types |
+| `hw.physicalcpu_max` | physical GPR cores in the chip |
+
+Use:
+
+- `hw.logicalcpu` — GCD worker starting point (rec 60, `amp.md`)
+- `hw.perflevel0.l1dcachesize` / `l2cachesize` — high-QoS cache blocking
+- `hw.perflevel{N}.cpusperl2` — cluster-aware sharing (rec 63, `amp.md`)
+
+---
+
+## Helpers
 
 ```c
 #include <errno.h>
@@ -194,10 +299,6 @@ void print_cpu_geometry(void)
 }
 ```
 
-Use `perflevel0.l1dcachesize` / `l2cachesize` as the blocking constants for
-a high-QoS kernel (rec 36). Use `hw.logicalcpu` as the GCD worker count
-starting point (rec 60, `amp.md`).
-
 ---
 
 ## Dispatch pattern
@@ -215,7 +316,8 @@ static dot_fn resolve_dot(void)
 
 Compile the SME TU with `-mcpu=apple-m4` (or gate with
 `__attribute__((target(...)))`). The process baseline stays `-mcpu=apple-m1`
-if you still ship to M1. Compiler targeting: `integer-isa.md`.
+if you still ship to M1. Compiler targeting: `integer-isa.md`. Family
+ladder: `chip-families.md`.
 
 Rosetta: if `processIsTranslated() == 1`, do not trust Apple-Silicon PMU
 paths or SME; you are on the translator. Native AArch64 is this skill’s
@@ -227,11 +329,17 @@ world.
 
 ```text
 sysctl hw.pagesize hw.cachelinesize hw.nperflevels hw.logicalcpu
-sysctl hw.perflevel0.l1dcachesize hw.perflevel0.l2cachesize
+sysctl hw.physicalcpu_max hw.memsize
+sysctl hw.perflevel0.name hw.perflevel0.l1dcachesize hw.perflevel0.l2cachesize
+sysctl hw.perflevel0.logicalcpu hw.perflevel0.cpusperl2
+sysctl hw.optional.arm64 hw.optional.AdvSIMD hw.optional.armv8_crc32
 sysctl hw.optional.arm.FEAT_SME hw.optional.arm.FEAT_I8MM
 sysctl hw.optional.arm.FEAT_BF16 hw.optional.arm.FEAT_MTE
 sysctl hw.optional.arm.FEAT_DIT hw.optional.arm.FEAT_SB
+sysctl hw.optional.arm.FEAT_WFxT hw.optional.arm.FEAT_LSE
+sysctl sysctl.proc_translated
 sysctl -d hw.optional.arm.FEAT_SME
+sysctl -a hw
 ```
 
 Do not paste a chip’s numeric dump into a header and call it portable.

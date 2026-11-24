@@ -1,12 +1,10 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: unaligned large-array access
 
 ## When to apply
 
 Apply when a hot loop streams a **large array** with a load or store
-width that does not match the address alignment (Guide recs 42–43).
+width that does not match the address alignment (recs 42–43).
 Occasional unaligned hits are cheap. A memcpy-shaped stream of them is
 not: every 16 B store that crosses a 16 B boundary uses two write
 ports, and every Nth load that crosses a 64 B boundary can serialize

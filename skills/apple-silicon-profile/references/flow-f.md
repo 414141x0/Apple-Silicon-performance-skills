@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Flow F: execution steps — SME engine
 
@@ -14,8 +12,9 @@ cores in that cluster, with a private ZA copy per core. The engine is
 nonspeculative. Engine instructions **trail** the core by dozens,
 hundreds, or thousands of cycles. Transit of dependent data
 core↔engine is on the order of **~20 cycles each way** — and that is
-the *best* case before the trail is included. Do **not** copy engine
-latency tables; open **Appendix A** for the current chip's numbers.
+the *best* case before the trail is included. Class latencies:
+`apple-silicon-codegen/references/latency-lookup.md`. Do **not** copy
+engine latency tables.
 
 SSVE-only (Z/P, no ZA) rarely beats the core's 4-wide ASIMD ports. The
 throughput path is **ZA + the Processing Grid**; SSVE stages data in
@@ -32,7 +31,9 @@ Trigger if **any** of the following is true:
   `LD1*`/`ST1*` while `PSTATE.SM=1`, or `#include <arm_sme.h>`
 - CPU Counters picker shows SME engine events retiring (names such as
   `INST_SME_ENGINE_ALU`, `INST_SME_ENGINE_LD`, `INST_SME_ENGINE_ST`,
-  `SME_ENGINE_SM_ENABLE` — confirm in Guide Table 8.1 for this chip)
+  `SME_ENGINE_SM_ENABLE` — pick names from `references/named-events.md`.
+  A missing picker name means the event is not on this chip — skip it.
+  Do not invent encodings)
 - Core waiting on the engine (`CORE_WAITING_SME_ENGINE_CYCLE`,
   `SCHEDULE_WAITING_SME_ENGINE_REG_DATA`,
   `LDST_UNIT_WAITING_SME_ENGINE_*` if present)
@@ -83,8 +84,7 @@ The engine has two compute stories:
 If the algorithm cannot use ZA (not a tile / outer-product / long
 accumulate into a 2D array), **stay on core ASIMD**. SSVE-only kernels
 rarely win. Invoke `apple-silicon-codegen` (`references/sme-engine.md`,
-`references/sme-ssve.md`) for structure; do not paste Guide mnemonic
-catalogs.
+`references/sme-ssve.md`) for structure.
 
 SVL is 512-bit and ZA is 4 KiB **on Apple silicon today**. Do not
 hardcode SVL in portable code; query the runtime (`svcntb()` / ABI)
@@ -144,11 +144,11 @@ this chip says so. QoS (`QOS_CLASS_USER_INTERACTIVE`) keeps the work on
 the cluster that has SME-8 when the system can. Background QoS may
 land the same binary on SME-2; that is expected, not a bug.
 
-Look up grid issue / extract latencies in **Appendix A**. Nominal
-figures the Guide uses as *design targets* (not a table dump): grid
-accumulate on the order of **4 cycles**, ZA vector extract longer.
-Cover them with **work in flight across ZA**, not with core-side
-busy-waits.
+Look up grid issue / extract latencies in
+`apple-silicon-codegen/references/latency-lookup.md`. Design targets
+(not a table dump): grid accumulate on the order of **4 cycles**, ZA
+vector extract longer. Cover them with **work in flight across ZA**,
+not with core-side busy-waits.
 
 ### 6. Cover ~4-cycle grid latency with whole ZA
 
@@ -158,8 +158,8 @@ the next outer-product, leaves the PEs idle.
 
 **Shape:** distribute accumulations across as much of ZA as the
 algorithm allows (tiles or vector groups). Stage through Z so the
-out-of-order schedulers are not the limit. Open Appendix A for the
-chip's issue rates; do not paste them.
+out-of-order schedulers are not the limit. Issue rates:
+`apple-silicon-codegen/references/latency-lookup.md`.
 
 ### 7. Pack compute instructions back-to-back for delivery fusion
 
@@ -169,12 +169,11 @@ interleaving of engine compute with **core** memory ops breaks that.
 
 **Shape:** a block of engine compute, then a block of engine
 loads/stores, not `ld1 ; add x ; fmopa ; ldr w ; fmopa`. Operation
-fusion (LUTI, extract+convert, MOVAZ+zip, …) is a separate Guide
-Chapter 6 topic — prefer it when the sequence matches, and do not
-break a fusion sequence with unrelated ops. Details live in
-`apple-silicon-codegen` / Guide 6.8; this flow only flags the
-anti-pattern when annotate shows isolated `fmopa` surrounded by core
-integer work.
+fusion (LUTI, extract+convert, MOVAZ+zip, …) lives in
+`apple-silicon-codegen/references/sme-engine.md` — prefer it when the
+sequence matches, and do not break a fusion sequence with unrelated
+ops. This flow only flags the anti-pattern when annotate shows
+isolated `fmopa` surrounded by core integer work.
 
 Picker name (if present): `INST_SME_ENGINE_PACKING_FUSED` vs
 `INST_SME_ENGINE_ALU`. A fused/ALU ratio near zero on a dense kernel
@@ -223,9 +222,11 @@ This skill **diagnoses**. The rewrite lives elsewhere:
 | ZA tile structure, streaming-mode entry/exit, SSVE staging, fusion sequences | `apple-silicon-codegen` → `references/sme-engine.md` and `references/sme-ssve.md` |
 | "Should this even be SME?" (short reduction, already-fast ASIMD, Accelerate exists) | `patterns/platform-libs-first.md` first; then stay on ASIMD |
 
-Open **Appendix A** for latencies and **Chapter 6** for engine
-microarch. Do not paste those tables into the user's report — quote
-the rule and the measurement you took.
+Latencies: `apple-silicon-codegen/references/latency-lookup.md`. Engine
+rewrite: `apple-silicon-codegen/references/sme-engine.md` and
+`apple-silicon-codegen/references/sme-ssve.md`. Events:
+`references/named-events.md`. Quote the rule and the measurement you
+took; do not paste tables.
 
 ---
 
@@ -240,7 +241,9 @@ sysctl hw.perflevel0.name hw.perflevel1.name
 xcrun xctrace record --template 'CPU Profiler' \
   --output sme_cpu.trace --launch -- ./<binary>
 
-# engine events — pick names from Guide Table 8.1 in the GUI picker
+# engine events — pick names from references/named-events.md in the
+# CPU Counters picker. A missing picker name means the event is not on
+# this chip — skip it. Do not invent encodings.
 # (INST_SME_ENGINE_*, SME_ENGINE_SM_ENABLE, CORE_WAITING_SME_ENGINE_CYCLE,
 #  LD_BLOCKED_BY_SME_LDST, INST_SME_ENGINE_PACKING_FUSED, …)
 xcrun xctrace record --template 'CPU Counters' \
@@ -268,7 +271,7 @@ step-4 violation).
 # SME engine report — <workload>
 
 FEAT_SME=1. perflevel0=<name>, perflevel1=<name>.
-QoS=<…>. Appendix A opened for this chip; numbers not copied.
+QoS=<…>. Class latencies from latency-lookup.md; numbers not copied.
 
 ## Signals
 - SMSTART/SMSTOP density, ZA live, FMOPA in the hot kernel: …

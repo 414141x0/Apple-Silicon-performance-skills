@@ -1,13 +1,11 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: fused multiply-accumulate (FMLA / MADD)
 
 ## When to apply
 
 Apply when a hot loop computes `acc = acc + a * b` (or `acc - a * b`, or
 an integer `a * b + c`) as **two instructions** — a multiply writing a
-temporary, then a separate add. Guide rec 15 (High / Medium): use the
+temporary, then a separate add. Rec 15 (High / Medium): use the
 fused op-add form.
 
 This is the integer `MADD`/`MSUB` family and the FP/ASIMD `FMLA`/`FMLS`

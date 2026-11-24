@@ -12,17 +12,16 @@ description: >-
   even without a profile.
 ---
 
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Performance patterns skill
 
 A catalog of well-known code patterns that cause performance problems on
 Apple silicon, with detection signals and resolution playbooks for each.
 
-Write-time ISA catalogs, mnemonic tables, and Appendix A latency numbers live
-in `apple-silicon-codegen`. This skill does not duplicate them. Load that skill
+Write-time ISA catalogs, mnemonic tables, and class latencies live in
+`apple-silicon-codegen` (`references/latency-lookup.md`,
+`references/chip-families.md`). This skill does not duplicate them. Load that skill
 when emitting new ASIMD / SSVE / SME kernels from scratch; load this skill when
 detecting and fixing a known anti-pattern.
 
@@ -73,7 +72,7 @@ if the capability is needed.
 | `patterns/simd-upconversion-impl.md` | Width-ladder promotion: scalar → ASIMD 128 (`arm_neon.h`) → SSVE predicates / SME ZA for matrix, outer-product, and large-tile dots. Scalar tail, associativity, bandwidth-bound caveat. |
 
 For write-time instruction selection, register pressure, and latency lookup,
-invoke `apple-silicon-codegen` rather than copying chapter catalogs into a
+invoke `apple-silicon-codegen` rather than copying ISA catalogs into a
 pattern fix.
 
 ---

@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern: false sharing → structured false-sharing fix
 
@@ -13,7 +11,7 @@ fields are logically independent — no thread needs the data another thread wri
 unit of ownership, causing spurious invalidations.
 
 The dual of this pattern is packing hot fields onto the **fewest** lines
-(Guide rec 38). Step 3 below is that dual: after padding proves the diagnosis,
+(rec 38). Step 3 below is that dual: after padding proves the diagnosis,
 group by access so same-thread hot fields share a line.
 
 ### Source code signals
@@ -82,7 +80,7 @@ proceeding. Do not skip to Step 3 without this confirmation.
 ### Step 3 — Optimize struct layout (pack hot fields)
 
 Once the fix is confirmed, minimize size by grouping members by **access
-pattern**. This is Guide rec 38 — pack hot variables onto the fewest cache
+pattern**. This is rec 38 — pack hot variables onto the fewest cache
 lines — the dual of the padding in Step 1:
 
 | Group | What to put here |

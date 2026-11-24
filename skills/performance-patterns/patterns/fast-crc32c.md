@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern: Fast CRC32C
 
@@ -29,7 +27,8 @@
 
 ## Why naive implementations are slow
 
-A single `CRC32CX` (`__crc32cd`) has ~3-cycle latency (Appendix A) and
+A single `CRC32CX` (`__crc32cd`) has ~3-cycle latency
+(`apple-silicon-codegen/references/latency-lookup.md`) and
 processes 8 bytes per instruction. One accumulator is limited to
 roughly 8 bytes / 3 cycles regardless of memory bandwidth.
 

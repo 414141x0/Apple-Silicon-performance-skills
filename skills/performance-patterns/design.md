@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Performance Patterns — Design Document
 
@@ -187,7 +185,7 @@ Name the file after what it indexes, not the pattern that reads it.
 
 ## Pattern class note: platform library before custom ISA
 
-A first-class pattern class, not a footnote. Guide recommendation 2 is
+A first-class pattern class, not a footnote. Rec 2 is
 High/High: explore Accelerate, vDSP, BLAS, `memcpy`, GCD, Compression, and
 simd before writing `arm_neon.h` or SME. `patterns/platform-libs-first.md` is
 the detection playbook. `guidelines/new-code.md` item 2 is the write-time form.
@@ -202,8 +200,9 @@ Bottlenecks, CPU Profiler, CPU Counters) and hotspot identification. When it
 identifies a known pattern, it invokes `performance-patterns`.
 
 `apple-silicon-codegen` owns write-time ISA (integer, ASIMD, SSVE/SME,
-microarch, Appendix A/B). Pattern files may point at it; they must not paste
-chapter catalogs.
+microarch, `references/latency-lookup.md`, `references/sysctl.md`,
+`references/chip-families.md`). Pattern files may point at it; they must not paste
+ISA catalogs.
 
 Do not send the agent to `linux-perf` for Apple silicon work.
 

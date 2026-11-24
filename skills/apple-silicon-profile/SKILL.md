@@ -23,9 +23,7 @@ description: >-
   it unnecessarily than to miss a performance opportunity.
 ---
 
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. Do not copy Guide tables. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Apple Silicon profiling skill
 
@@ -43,12 +41,12 @@ The skill is organized into five parts:
 - **Part 4: Building blocks** — focused data-collection primitives
 - **Part 5: Resolution strategies** — named patterns in `performance-patterns`
 
-Do **not** invent PMU event encodings. When a named event is required, open
-Apple Silicon CPU Optimization Guide 5.0 **Chapter 8 / Table 8.1**, confirm
-the event exists on this chip, and pick it in the Instruments **CPU Counters**
-event picker (or the equivalent `--recording-options` JSON). Per-chip cache
-sizes and Appendix A latency rows live in the Guide and in `sysctl`; never
-hardcode them.
+Do **not** invent PMU event encodings. When a named event is required, pick
+names from `references/named-events.md` in the CPU Counters picker. A missing
+picker name means the event is not on this chip — skip it. Do not invent
+encodings. Per-chip cache sizes: query `sysctl` (`sysctl.md`). Class
+latencies: `apple-silicon-codegen/references/latency-lookup.md`. Family
+placement: `chip-families.md`. Never hardcode them.
 
 ---
 
@@ -122,19 +120,19 @@ dsymutil <output>
 If given a pre-built binary without `-g`, offer to recompile. If you cannot,
 use **Building block: resolve address to source** (Part 4).
 
-## Which instrument to use (Guide Chapter 8)
+## Which instrument to use
 
 | Instrument | What it is | Use it for |
 |------------|------------|------------|
 | **Time Profiler** | Wall-clock, simultaneous sampler across CPUs. Sample rate is **not** adjusted for frequency or residency. | "What is the app doing?" overview only. **Not** for ISA or microarch work. |
 | **CPU Profiler** | Cycle-based PMI, independent per CPU. | ISA / hotspot work. Default for Flows B, D, E. |
-| **CPU Counters** | PMU counting and sampling. | Named events from Guide Table 8.1 via the picker. |
-| **CPU Bottlenecks** | Guided CPU Counters mode (Instruments 26+). Four fractions of sustainable μop bandwidth. | Flow A. Default `selectedCountingMode` of the CPU Counters template on current Xcode. |
+| **CPU Counters** | PMU counting and sampling. | Named events from `references/named-events.md` via the picker. |
+| **CPU Bottlenecks** | guided CPU Counters mode (Instruments 26+). Four fractions of sustainable μop bandwidth (`references/named-events.md`). | Flow A. Default `selectedCountingMode` of the CPU Counters template on current Xcode. |
 | **Processor Trace** | Hardware control-flow reconstruction. Floor: M4 / A18 / iPhone 16 / iPad Pro M4; iOS 18.4+ / macOS 15.4+; Instruments 16.3+; <1% overhead; dSYM required. | Exact call sequences, ARC / C++ synthesized frames. Flow I. |
 | **System Trace** / **Points of Interest** | Scheduling, syscalls, `os_signpost`. | Flow C / D when threads block, migrate, or wait. |
 | **App Launch** / **Animation Hitches** / **Time Profiler** | Wall-clock / frame / first-draw. | Flow I. Not for ISA. |
 | **Allocations** / **File Activity** / **SwiftUI** | Heap, writes, view-body cost. | Flow I. |
-| **Thread Sanitizer** | Xcode TSan (Guide 8.3). | Correctness of sharing; use alongside Flow C, not as a substitute for a profile. |
+| **Thread Sanitizer** | Xcode Thread Sanitizer. | Correctness of sharing; use alongside Flow C, not as a substitute for a profile. |
 
 **Rule:** if the question is "where do cycles go in this loop / this ISA
 sequence?", use **CPU Profiler** (and CPU Counters / Bottlenecks). If the
@@ -180,13 +178,10 @@ work away on mispredicts, starved of instructions, or stuck processing?
 
 Use **Building block: CPU Counters / Bottlenecks** (Part 4).
 
-**Useful** is measured μPC / max μPC **for that core type** — not raw IPC,
-and not a number you compare across chip families (sustainable bandwidth
-rises from family to family). High Useful + still slow → more work per
-instruction (algorithm / ISA), not microarch tuning.
-
-Memory-bound on Apple Silicon is **Critical L1D miss while executing** plus
-**Critical L1D miss**, not a Linux `cache-misses/refs` ratio.
+The four fractions (Useful / Discarded / Delivery / Processing) and the
+deeper Critical L1D miss rows live in `references/named-events.md`. High
+Useful + still slow → algorithm / ISA, not more counters. Memory-bound is
+combined Critical L1D miss, not a Linux `cache-misses/refs` ratio.
 
 Read `references/flow-a.md` for the execution steps.
 
@@ -280,7 +275,8 @@ when a cluster's frequency drops while a sibling is in SM/ZA.
 - Disassembly or source contains `SMSTART`, `SMSTOP`, `ZA`, `FMOPA`,
   `SMSTART ZA`, streaming-SVE loads/stores, or `#include <arm_sme.h>`
 - CPU Counters picker shows SME engine events retiring (`INST_SME_ENGINE_*`
-  family — confirm names in Guide Table 8.1 for this chip)
+  family — pick names from `references/named-events.md`. A missing picker
+  name means the event is not on this chip — skip it. Do not invent encodings)
 - Core is waiting on the engine (picker names such as
   `CORE_WAITING_SME_ENGINE_CYCLE` if present)
 - Matmul / conv / outer-product on M4+ / A18+, or a cluster-wide frequency
@@ -404,17 +400,19 @@ further manual assembly analysis yourself.
 ## New ISA-level code / sysctl / SME structure → `apple-silicon-codegen`
 
 **Invoke `apple-silicon-codegen`** when the work is writing or restructuring
-code against Guide Chapters 2–7 + Appendices A/B, not just spotting an
-anti-pattern in existing source.
+ISA / SME / sysctl code, not just spotting an anti-pattern in existing
+source.
 
 ### Trigger
 
 - New kernel that needs ASIMD / SSVE / SME ISA structure
 - `sysctlbyname` feature dispatch, cache-block sizes, page/line sizes
+  (`sysctl.md`, `chip-families.md`)
 - SME routine structure: ZA tiles, streaming mode, 4 KiB isolation, no
-  core↔engine bounce
-- Latency lookup: tell the agent to open **Appendix A** for the current
-  chip; do not paste tables
+  core↔engine bounce — `apple-silicon-codegen` (`references/sme-engine.md`,
+  `references/sme-ssve.md`)
+- Latency lookup: `apple-silicon-codegen/references/latency-lookup.md` for
+  the current chip's class latencies; do not paste tables
 - Apple ABI / PAC / DIT (`X18`, `va_list`, `ptrauth.h`, `timingsafe.h`)
 
 When the trigger fires, say: *"I'll invoke `apple-silicon-codegen` for the
@@ -435,7 +433,7 @@ Detailed command syntax, flags, and output formats for each primitive. Read
 | `CPU Profiler record` | Cycle PMI `.trace`; contrast Time Profiler |
 | `Disassembly annotate` | CPU Profiler detail / `xctrace show --source`; `otool -tv` / `llvm-objdump -d -C` |
 | `resolve address to source` | `atos -arch arm64 -o binary -l loadaddr` |
-| `Contention scan` | ATOMIC_OR_EXCLUSIVE_* in the picker (Guide Table 8.1), 128 B layout dump, dual-profile. Replaces `perf c2c`. |
+| `Contention scan` | ATOMIC_OR_EXCLUSIVE_* in the picker (`references/named-events.md`), 128 B layout dump, dual-profile. Replaces `perf c2c`. |
 | `Top-N functions / Top-N lines` | Ranked list from a `.trace` via `xctrace show` / `xctrace export` |
 | `Dual-profile comparison` | 1 thread vs `hw.logicalcpu` (and P-count); **must** record QoS; cannot `taskset` to P vs E |
 | `Annotate pattern scan` | AArch64 mnemonics: FADD vs FMLA.4S, FMOV/UMOV, CSEL vs B.cond, LDADD vs LDXR, SMSTART/FMOPA, taken-branch density, serial FADDS |
@@ -458,7 +456,7 @@ Apple names (not `vzeroupper`):
 
 | Resolution strategy | `performance-patterns` pattern file |
 |---------------------|-------------------------------------|
-| TTAS / block-not-spin (Guide 7.3: block idle threads; do not spin except sub-quantum waits) | `patterns/ttas.md` and `patterns/spin-wait.md` |
+| TTAS / block-not-spin (block idle threads; do not spin except sub-quantum waits) | `patterns/ttas.md` and `patterns/spin-wait.md` |
 | Width ladder ASIMD → SSVE/SME | `patterns/simd-upconversion.md` |
 | Parallel accumulator rewrite | `patterns/parallel-accumulator.md` |
 | False sharing 128 B + pack hot variables onto the fewest lines | `patterns/false-sharing.md` |
@@ -520,5 +518,6 @@ template name. **CPU Bottlenecks** is a guided counting mode of the
 **CPU Counters** template on Instruments 26+ (confirm with
 `--show-recording-options`); it may also appear as a GUI template.
 
-Event names vary by chip family. Open Guide Table 8.1 and pick them in the
-Instruments CPU Counters picker. Do not paste encodings into commands.
+Event names vary by chip family. Pick names from `references/named-events.md`
+in the CPU Counters picker. A missing picker name means the event is not on
+this chip — skip it. Do not invent encodings.

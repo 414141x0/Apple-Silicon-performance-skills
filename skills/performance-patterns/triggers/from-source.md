@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern triggers: source code
 
@@ -124,7 +122,7 @@ Read `patterns/missing-restrict.md`.
 ### Test-and-Set / spin-wait
 
 `while (!atomic_compare_exchange…)` with no relaxed load first, or
-`while (!flag) ;`. Guide 7.3–7.4: prefer GCD, `os_unfair_lock`, pthreads,
+`while (!flag) ;`. Recs 61–62: prefer GCD, `os_unfair_lock`, pthreads,
 C11; prefer LSE `LDADD`/`CAS`. Spin only for waits comparable to a thread
 switch; otherwise block. Link `patterns/spin-wait.md` whenever the loop
 occupies a core while idle.
@@ -138,7 +136,7 @@ Read `patterns/ttas.md`.
 Per-thread fields packed into one struct without `alignas(128)` /
 `char _pad[124]`. Writers are independent. Pad first, verify with a
 dual-profile, then pack same-thread hot fields onto the fewest 128 B lines
-(Guide rec 38). Cross-cluster modified sharing is especially expensive.
+(rec 38). Cross-cluster modified sharing is especially expensive.
 
 Read `patterns/false-sharing.md`.
 
@@ -225,7 +223,7 @@ Read `patterns/fast-crc32c.md`.
 
 New or existing code implements a dot, GEMM, FFT, convolution, sort of
 floats, compression, or `memcpy` by hand. Check Accelerate / simd / GCD /
-Compression / `memcpy` first (Guide rec 2). Custom ISA is what remains.
+Compression / `memcpy` first (rec 2). Custom ISA is what remains.
 
 Read `patterns/platform-libs-first.md`.
 

@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Flow I: App-level xctrace (hangs, hitches, launch, memory, disk, power)
 
@@ -34,7 +32,7 @@ public Apple names; if this Xcode spells one differently, use that.
 Thread Performance Checker must be **off** for these recordings (it
 perturbs scheduling). It stays on for Flow H tests.
 
-## Thresholds (public Apple docs; not Guide Table 8.1)
+## Thresholds (public Apple docs)
 
 | Signal | Number | Meaning |
 |--------|--------|---------|

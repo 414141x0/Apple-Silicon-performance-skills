@@ -1,11 +1,9 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: spin-wait → block idle threads
 
 ## When to apply
 
-Apply when a thread **burns a core waiting** (Guide rec 61). On Apple
+Apply when a thread **burns a core waiting** (rec 61). On Apple
 silicon that core is often a P or S core the OS could have given to
 runnable work — including the work this thread is waiting *on*, which
 may be stuck on an E core because this spinner is occupying the fast
@@ -194,7 +192,7 @@ Cap the spin and **fall back to a cond / semaphore**. An unbounded
 
 1. **Correctness** — no lost wakeups. Cond waits stay in a `while`
    (not `if`) around the predicate. Pair with
-   `weakly-ordered-memory.md` and TSan (Guide 8.3).
+   `weakly-ordered-memory.md` and TSan (rec 64).
 2. **System Trace** — the waiting thread should show Blocked / waiting
    on a semaphore or cond, not Running. P cores should be free for
    runnable work.

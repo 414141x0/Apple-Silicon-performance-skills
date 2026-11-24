@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 # Pattern: GPR ↔ vector register bounce
 
 ## When to apply
@@ -8,8 +6,9 @@
 Apply when a hot path **moves the same value between the general-purpose
 register file (X/W) and the vector/FP register file (V/Q/S/D)** just to feed
 the next operation. The move is not the algorithm — it is a tax on the load
-issue slots and a 4–5 cycle MV2VEC delay (Guide 5.5.1–5.5.2; Appendix A has
-the current chip’s numbers).
+issue slots and a 4–5 cycle MV2VEC delay (recs 28–29;
+`apple-silicon-codegen/references/latency-lookup.md` has the current
+chip’s numbers).
 
 ### Source code signals
 
@@ -44,9 +43,10 @@ Apple silicon keeps integer ALUs and the Advanced SIMD / FP unit on different
 register files. A GPR→vector transfer (MV2VEC) is not a free rename: it
 
 1. **Steals a load issue slot** — the same ports that should be doing `LDR`.
-2. **Costs ~4–5 cycles** for the movement itself, plus any convert. Open
-   Guide 5.5.1 and Appendix A for the exact latency/bandwidth of the chip
-   you are on; do not bake a table into the patch.
+2. **Costs ~4–5 cycles** for the movement itself, plus any convert. See
+   recs 28–29 and `apple-silicon-codegen/references/latency-lookup.md`
+   for the exact latency/bandwidth of the chip you are on; do not bake
+   a table into the patch.
 
 ```text
 /* Typical compiler output for:  float f = (float)(*p); */
@@ -182,9 +182,9 @@ anti-pattern this file exists to kill.
    `FMOV`, not `UMOV`, unless an extend is required.
 2. **CPU Profiler** — the MV2VEC-class instructions drop out of the hot
    annotated region; load-unit samples shift toward real `LDR`/`LDP`.
-3. **Appendix A / Guide 5.5.1** — if you need a number for a write-up, open
-   those sections for the chip family. Do not paste the latency table into
-   the patch or the commit message.
+3. **`apple-silicon-codegen/references/latency-lookup.md` (recs 28–29)** —
+   if you need a number for a write-up, look it up there. Do not paste
+   class latencies into the patch or the commit message.
 4. **Correctness** — bit patterns that were sign-extended by `SMOV` must
    still be extended (now explicitly) after switching to `FMOV`.
 
@@ -194,7 +194,7 @@ anti-pattern this file exists to kill.
 
 1. Show the C (or asm) with `/* ◄ GPR→vec MV2VEC */` on the offending line.
 2. One paragraph: the move steals a load issue slot and costs ~4–5 cycles;
-   numbers live in Guide 5.5.1 / Appendix A.
+   numbers live in `apple-silicon-codegen/references/latency-lookup.md`.
 3. Show the rewritten load-into-V (or `FMOV`) form next to the original.
 4. Warn that a long integer chain should **not** be forced into SIMD — only
    the short prefix that would otherwise round-trip.

@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Pattern triggers: profiling output
 
@@ -55,8 +53,9 @@ ISA work. Find the matching pattern below, then read the linked file in
 CPU Profiler / `llvm-objdump -d` shows scalar `FADDS`, `FADDD`, `FMULS`, or
 scalar `FMLA`/`FMADD` at the top of a tight loop. CPU Bottlenecks reports
 **Processing** (dependency) or high **Useful** with low L1D miss — not a
-memory stall. Cycles per iteration sit at FP latency (look up Appendix A;
-~4 cycles is the FMLA rule of thumb) even though the body is short. Four
+memory stall. Cycles per iteration sit at FP latency (look up
+`apple-silicon-codegen/references/latency-lookup.md`; ~4 cycles is the
+FMLA rule of thumb) even though the body is short. Four
 independent accumulators, then ASIMD `vfmaq_f32`, then SME ZA for large
 GEMM/dot.
 
@@ -94,7 +93,7 @@ Read `patterns/missing-restrict.md`.
 
 CPU Profiler shows a tight `CAS` or `LDXR`/`STXR` cluster with no ordinary
 load of the lock first, or a load-of-flag / `WFE` / `YIELD` loop. Throughput
-drops as threads increase. Guide 7.3: **block, do not spin**, except waits
+drops as threads increase. Rec 61: **block, do not spin**, except waits
 on the order of a thread switch. Prefer GCD, `os_unfair_lock`, pthreads,
 C11; prefer LSE `LDADD`/`CAS` over exclusive pairs. TTAS is the rare
 short-wait form; see also `patterns/spin-wait.md`.
@@ -144,7 +143,7 @@ Read `patterns/library-version-upgrade.md`.
 
 The hot symbol is *homemade* (`dot_neon`, `my_fft`, `simd_memcpy`) and
 `otool -L` does not show Accelerate / Compression / libSystem owning that
-work. Guide rec 2 (High/High): call vDSP/BLAS/`memcpy`/GCD first. Custom
+work. Rec 2 (High/High): call vDSP/BLAS/`memcpy`/GCD first. Custom
 ASIMD is the fallback.
 
 Read `patterns/platform-libs-first.md`.
@@ -220,7 +219,7 @@ Read `patterns/mutex-to-rwlock.md`.
 
 Hot loop is dense in `FMOV` (general), `UMOV`, `INS` (general),
 `DUP` (general). Each move eats a load-issue slot and ~3–5 cycles
-(Appendix A / Guide 5.5.1–5.5.2). Load FP data into V, keep it there, store
+(recs 28–29; `apple-silicon-codegen/references/latency-lookup.md`). Load FP data into V, keep it there, store
 from V. Prefer `FMOV` over `UMOV`/`SMOV` when no extend is needed.
 
 Read `patterns/gpr-vector-moves.md`.
@@ -262,7 +261,7 @@ Read `patterns/amp-work-partition.md`.
 ### Spin-wait
 
 Tight load of a flag, `WFE`/`YIELD` loop, or homemade backoff occupying
-S/P cores. Guide 7.3: block unless the wait is on the order of a thread
+S/P cores. Rec 61: block unless the wait is on the order of a thread
 switch. Spinning pins work onto E cores and steals S/P from the rest of
 the machine.
 
@@ -308,7 +307,7 @@ Read `patterns/sysctl-hardcoding.md`.
 
 A wide `LD1`/`LDR` of a value that was just written as several small
 `STRB`/`STRH`/`STP` pieces, or a store/reload that could have stayed in a
-register. Guide rec 44–45: hard-to-predict STLF and many-small-stores-to-one
+register. Recs 44–45: hard-to-predict STLF and many-small-stores-to-one
 load are expensive. Keep the value in a register; if you must store, match
 widths.
 
@@ -341,7 +340,7 @@ Read `patterns/software-prefetch.md`.
 ### JIT I-cache
 
 Hot `sys_icache_invalidate`, `ic ivau`+`dsb`+`isb`, or `__clear_cache` from
-a JIT emitting tiny traces. Guide rec 9: invalidation is expensive. Batch
+a JIT emitting tiny traces. Rec 9: invalidation is expensive. Batch
 emissions, reuse pages, avoid toggling NX on every stub.
 
 Read `patterns/jit-icache.md`.

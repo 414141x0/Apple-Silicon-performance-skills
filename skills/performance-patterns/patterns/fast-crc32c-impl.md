@@ -1,6 +1,4 @@
-<!-- Structure derived from Intel Performance Skills (MIT, 2026).
-     Optimization rules are original paraphrases of Apple Silicon CPU
-     Optimization Guide 5.0. MIT license. -->
+<!-- Structure derived from Intel Performance Skills (MIT, 2026). Original agent instructions. MIT license. -->
 
 # Fast CRC32C — implementation guide
 
@@ -65,7 +63,7 @@ uint32_t crc32c(uint32_t crc, const void *buf, size_t len)
 ```
 
 `apple_feat("armv8_crc32")` reads `hw.optional.armv8_crc32` (legacy name
-in Appendix B). There is no `FEAT_CRC32` sysctl on all OS versions; the
+in `apple-silicon-codegen/references/sysctl.md`). There is no `FEAT_CRC32` sysctl on all OS versions; the
 helper treats a missing key as false and falls through to portable.
 
 ### Adapting to an existing API
